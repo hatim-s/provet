@@ -12,8 +12,8 @@ test("the initial composition owns every FND-01 effect boundary", () => {
     terminal: {
       getStandardOutputWidth: () => null,
       isStandardErrorInteractive: () => false,
-      writeStandardError: () => undefined,
-      writeStandardOutput: () => undefined,
+      writeStandardError: () => Promise.resolve(),
+      writeStandardOutput: () => Promise.resolve(),
     },
   } satisfies VetEffectPorts;
 

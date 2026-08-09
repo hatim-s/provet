@@ -8,6 +8,7 @@ and the committed lockfile remain authoritative.
 | Script | Command | Purpose |
 | --- | --- | --- |
 | `build` | `pnpm build` | Bundle the Bun-targeted `vet` executable to `dist/vet.js`. |
+| `prepack` | Automatic during `pnpm pack` | Build `dist/vet.js` before package contents are collected so the declared `vet` binary is always present. |
 
 ## Static verification
 

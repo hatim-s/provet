@@ -9,6 +9,18 @@ const vetCommand = createVetCommand({
   ports,
   version: packageMetadata.version,
 });
-const exitCode = await vetCommand.run(ports.process.getArguments());
+let exitCode = 70;
+
+try {
+  exitCode = await vetCommand.run(ports.process.getArguments());
+} catch {
+  try {
+    await ports.terminal.writeStandardError(
+      "vet: failed to write command output.\n",
+    );
+  } catch {
+    // With both terminal streams unavailable, exit 70 is the only observable contract.
+  }
+}
 
 ports.process.setExitCode(exitCode);

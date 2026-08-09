@@ -56,9 +56,11 @@ function createObservedPorts(observation: CommandObservation): VetEffectPorts {
       },
       writeStandardError: (text) => {
         observation.standardError += text;
+        return Promise.resolve();
       },
       writeStandardOutput: (text) => {
         observation.standardOutput += text;
+        return Promise.resolve();
       },
     },
   };
@@ -103,6 +105,34 @@ describe("createVetCommand", () => {
     );
     expect(observation.standardOutput.endsWith("\n")).toBe(true);
     expect(observation.standardError).toBe("");
+    expect(observation.effectAccessCount).toBe(0);
+  });
+
+  test.each([
+    ["missing arguments", []],
+    ["unknown option", ["--bogus"]],
+    ["repeated help option", ["--help", "--help"]],
+    ["extra help argument", ["--help", "typo"]],
+    ["trailing help option", ["--help", "--bogus"]],
+    ["extra version argument", ["--version", "extra"]],
+  ])("rejects %s as a usage error", async (_description, commandArguments) => {
+    const observation: CommandObservation = {
+      effectAccessCount: 0,
+      standardError: "",
+      standardOutput: "",
+    };
+    const vetCommand = createVetCommand({
+      ports: createObservedPorts(observation),
+      version: "1.2.3",
+    });
+
+    const exitCode = await vetCommand.run(commandArguments);
+
+    expect(exitCode).toBe(2);
+    expect(observation.standardOutput).toBe("");
+    expect(observation.standardError).toBe(
+      "Only --help and --version are available in the FND-01 bootstrap.\n",
+    );
     expect(observation.effectAccessCount).toBe(0);
   });
 });

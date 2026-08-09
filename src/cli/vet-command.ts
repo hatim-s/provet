@@ -27,19 +27,19 @@ function createVetCommand(dependencies: VetCommandDependencies): VetCommand {
   async function runVetCommand(
     commandArguments: readonly string[],
   ): Promise<number> {
-    if (commandArguments.length === 0 || commandArguments[0] === "--help") {
-      dependencies.ports.terminal.writeStandardOutput(HELP_TEXT);
+    if (commandArguments.length === 1 && commandArguments[0] === "--help") {
+      await dependencies.ports.terminal.writeStandardOutput(HELP_TEXT);
       return 0;
     }
 
     if (commandArguments.length === 1 && commandArguments[0] === "--version") {
-      dependencies.ports.terminal.writeStandardOutput(
+      await dependencies.ports.terminal.writeStandardOutput(
         `${dependencies.version}\n`,
       );
       return 0;
     }
 
-    dependencies.ports.terminal.writeStandardError(
+    await dependencies.ports.terminal.writeStandardError(
       "Only --help and --version are available in the FND-01 bootstrap.\n",
     );
     return 2;

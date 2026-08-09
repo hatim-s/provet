@@ -7,10 +7,10 @@ interface TerminalPort {
   isStandardErrorInteractive(): boolean;
 
   /** Writes exact bytes to stderr. */
-  writeStandardError(text: string): void;
+  writeStandardError(text: string): Promise<void>;
 
   /** Writes exact bytes to stdout. */
-  writeStandardOutput(text: string): void;
+  writeStandardOutput(text: string): Promise<void>;
 }
 
 export type { TerminalPort };
