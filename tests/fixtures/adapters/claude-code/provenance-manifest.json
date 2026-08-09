@@ -36,6 +36,13 @@
       "isLiveCompatibilityEvidence": false
     },
     {
+      "file": "negative-missing-init.jsonl",
+      "sha256": "70bebba334566cfb09bc9dc5ee27704c72bf1669665d7dd36cdc742caa011ee1",
+      "scenario": "terminal result without required init and version framing",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
       "file": "negative-partial-trajectory.jsonl",
       "sha256": "22e0d24361bcb498ba8fecda9c6977f4359f9702dda0b2861865977badf2b0a3",
       "scenario": "end of stdout before result",
@@ -46,6 +53,20 @@
       "file": "negative-unknown-event.jsonl",
       "sha256": "17bf4fd3b36334cf1fe695f299bf77aa4fb65024a87eba5c523dbbe57a144c47",
       "scenario": "unknown top-level event with later result",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-unknown-result-subtype.jsonl",
+      "sha256": "24ddca38a1ff1a17a629a31242c71c701aacec2542c7344612d60aeba886c8ec",
+      "scenario": "unknown terminal result subtype with otherwise coherent fields",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-unknown-system-subtype.jsonl",
+      "sha256": "f49767d172ef04ea7c3c0494cb55be98f05d016926ea089ca2c74561eaf0b6e3",
+      "scenario": "unknown system notice subtype before a coherent result",
       "evidenceClass": "negative-synthetic",
       "isLiveCompatibilityEvidence": false
     },

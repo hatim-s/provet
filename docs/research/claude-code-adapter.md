@@ -107,7 +107,7 @@ always remain lockstep. The adapter must inspect both independently.
 
 | Native discriminator | Relevant fields | Ordering and meaning |
 | --- | --- | --- |
-| `system/init` | `claude_code_version`, `session_id`, `uuid`, `cwd`, `model`, `tools`, `mcp_servers`, `permissionMode`, `apiKeySource`, optional `capabilities` | Expected first semantic record based on published examples. It is the in-stream version and capability authority. Absolute cwd and auth source require redaction/minimization. |
+| `system/init` | `claude_code_version`, `session_id`, `uuid`, `cwd`, `model`, `tools`, `mcp_servers`, `permissionMode`, `apiKeySource`, optional `capabilities` | Required exactly once as the first semantic record. It is the in-stream version and capability authority. Missing, duplicate, late, or malformed init framing makes trajectory evidence degraded or unavailable. Absolute cwd and auth source require redaction/minimization. |
 | `assistant` | `message.content[]`, `parent_tool_use_id`, `uuid`, `session_id`, optional `error`, `aborted`, `subagent_type`, `task_description`, `timestamp` | One API turn can produce multiple assistant records. Preserve line order, then content-array index. Timestamp is display provenance only; the published type explicitly says not to order by it. |
 | `user` | `message.content[]`, `parent_tool_use_id`, optional `tool_use_result`, `isSynthetic`, `uuid`, `session_id`, subagent metadata | Claude Code uses user-role records for tool results and optional replay acknowledgements. Correlate by `tool_use_id`, never adjacency alone. |
 | `result/success` | `result`, `stop_reason`, optional `terminal_reason`, `is_error`, `duration_ms`, `duration_api_ms`, `num_turns`, `total_cost_usd`, `usage`, `modelUsage`, `permission_denials` | Terminal query result. `result` is the canonical final text; assistant text remains the trajectory. |
@@ -157,12 +157,15 @@ tool-specific structured output. Proposed precedence is:
 The `0.3.226` `SDKMessage` union also permits:
 
 - `stream_event` partial assistant events when partial messages are enabled;
-- `system` notices including `status`, `api_retry`, `compact_boundary`,
-  `permission_denied`, `task_started`, `task_progress`, `task_updated`,
-  `task_notification`, `background_tasks_changed`, `thinking_tokens`,
-  `commands_changed`, `notification`, `files_persisted`, `memory_recall`, hook
-  lifecycle messages, plugin installation, model-refusal fallback, mirror
-  errors, informational messages, and conversation/session state changes;
+- `system` notices with the exact inspected subtypes `api_retry`,
+  `background_tasks_changed`, `commands_changed`, `compact_boundary`,
+  `control_request_progress`, `elicitation_complete`, `files_persisted`,
+  `hook_progress`, `hook_response`, `hook_started`, `informational`,
+  `local_command_output`, `memory_recall`, `mirror_error`,
+  `model_refusal_fallback`, `model_refusal_no_fallback`, `notification`,
+  `permission_denied`, `plugin_install`, `session_state_changed`, `status`,
+  `task_notification`, `task_progress`, `task_started`, `task_updated`,
+  `thinking_tokens`, and `worker_shutting_down`;
 - top-level `tool_progress`, `tool_use_summary`, `auth_status`,
   `rate_limit_event`, `prompt_suggestion`, and `conversation_reset` records.
 
@@ -178,6 +181,29 @@ policy rather than optimistic range matching.
 `--include-partial-messages`; completed `assistant` records are the semantic
 source. If partial records appear, retain them as raw progress only and never
 double-count their content alongside completed assistant messages.
+
+### Replay spike framing contract
+
+The test-only replay spike uses an explicit `awaiting-init -> streaming ->
+terminal` state machine. An exact-version `system/init` with the required
+published fields is the only transition into `streaming`. A known, coherent
+result shape is the only transition into `terminal`; records after it are
+protocol drift. An unsupported init version enters a separate `unsupported`
+state before any proposed normalized event is emitted.
+
+For schema candidate `2.1.226`, terminal subtypes are allowlisted exactly as
+`success`, `error_during_execution`, `error_max_turns`,
+`error_max_budget_usd`, and `error_max_structured_output_retries`. System notice
+subtypes use the exact inspected list above. An unknown system/result subtype
+remains in ordered raw records, emits a typed diagnostic, and cannot produce a
+complete replay. Known system notices must also retain their published UUID and
+session provenance. An unknown result subtype is not a terminal result.
+
+Replay output records the observed version, its `system/init` line, the
+candidate-version list supplied to the test, and the evidence class. It always
+sets `isLiveCompatibilityEvidence: false`; this state-machine coverage is
+schema-derived/synthetic evidence and does not populate the production support
+allowlist or establish provider compatibility.
 
 ## Proposed normalized mapping
 
@@ -250,8 +276,10 @@ capture stdout + stderr + process provenance
         v
 parse init -> assistant/user records -> result
         |
+        +--> missing/duplicate/invalid init -----> partial; evidence unavailable
         +--> unknown version --------------------> unsupported (no billed run)
         +--> malformed/unknown/missing result ---> partial + protocol error
+        +--> unknown system/result subtype ------> partial + raw preservation
         +--> unmatched tool call/result ---------> partial trajectory
         +--> result/error_* ---------------------> complete failed invocation
         `--> result/success + coherent prefix ---> complete invocation
@@ -274,9 +302,13 @@ parse init -> assistant/user records -> result
 
 A stream is partial when any of these holds:
 
+- the required first `system/init` record is missing, duplicated, late, or does
+  not match its required shape;
 - stdout contains malformed JSON or a non-object record;
-- a native discriminator/content block is unknown;
+- a native discriminator, system/result subtype, or content block is unknown;
+- a known terminal subtype does not match its required result shape;
 - no terminal result is observed;
+- a record follows a coherent terminal result;
 - a tool result has no prior tool call;
 - a tool call has no result when the stream terminates;
 - the process exits or is killed before coherent terminal capture;

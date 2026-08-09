@@ -27,7 +27,16 @@ describe("Claude Code replay parser spike", () => {
     const replay = await replayFixture("schema-derived-text.jsonl");
 
     expect(replay.status).toBe("complete");
+    expect(replay.trajectoryEvidence).toBe("complete");
     expect(replay.observedClaudeCodeVersion).toBe(SCHEMA_CANDIDATE_VERSION);
+    expect(replay.versionProvenance).toEqual({
+      candidateVersions: [SCHEMA_CANDIDATE_VERSION],
+      evidenceClass: "schema-derived-or-synthetic-replay",
+      isLiveCompatibilityEvidence: false,
+      observedVersion: SCHEMA_CANDIDATE_VERSION,
+      source: "system-init",
+      sourceLineNumber: 1,
+    });
     expect(replay.rawRecords.map((record) => record.lineNumber)).toEqual([
       1, 2, 3,
     ]);
@@ -157,11 +166,150 @@ describe("Claude Code replay parser spike", () => {
     },
   );
 
+  test("rejects a terminal result that is missing init and version framing", async () => {
+    const replay = await replayFixture("negative-missing-init.jsonl");
+
+    expect(replay.status).toBe("partial");
+    expect(replay.trajectoryEvidence).toBe("unavailable");
+    expect(replay.observedClaudeCodeVersion).toBeNull();
+    expect(replay.events).toEqual([]);
+    expect(replay.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "missing-init",
+      "missing-terminal-result",
+    ]);
+    expect(replay.rawRecords[0]?.value).toMatchObject({
+      subtype: "success",
+      type: "result",
+    });
+    expect(replay.versionProvenance).toMatchObject({
+      isLiveCompatibilityEvidence: false,
+      observedVersion: null,
+      source: "unavailable",
+      sourceLineNumber: null,
+    });
+  });
+
+  test("preserves an unknown system subtype raw and degrades trajectory evidence", async () => {
+    const replay = await replayFixture("negative-unknown-system-subtype.jsonl");
+
+    expect(replay.status).toBe("partial");
+    expect(replay.trajectoryEvidence).toBe("degraded");
+    expect(replay.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
+      "unknown-system-subtype",
+    );
+    expect(replay.rawRecords[1]?.value).toMatchObject({
+      subtype: "future_security_event",
+      type: "system",
+    });
+    expect(replay.events.map((event) => event.type)).toEqual([
+      "session_started",
+      "usage_reported",
+      "adapter_completed",
+    ]);
+  });
+
+  test("preserves an unknown result subtype raw without accepting it as terminal", async () => {
+    const replay = await replayFixture("negative-unknown-result-subtype.jsonl");
+
+    expect(replay.status).toBe("partial");
+    expect(replay.trajectoryEvidence).toBe("degraded");
+    expect(replay.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "unknown-result-subtype",
+      "missing-terminal-result",
+    ]);
+    expect(replay.rawRecords[1]?.value).toMatchObject({
+      subtype: "future_result",
+      type: "result",
+    });
+    expect(replay.events.map((event) => event.type)).toEqual([
+      "session_started",
+    ]);
+  });
+
+  test("requires the known terminal subtype to have a coherent published shape", async () => {
+    const fixtureLines = (await readReplayFixture("schema-derived-text.jsonl"))
+      .trimEnd()
+      .split("\n");
+    const invalidResult = JSON.parse(fixtureLines[2] ?? "{}") as Record<
+      string,
+      unknown
+    >;
+    Reflect.deleteProperty(invalidResult, "usage");
+    fixtureLines[2] = JSON.stringify(invalidResult);
+
+    const replay = replayClaudeCodeStream(`${fixtureLines.join("\n")}\n`, {
+      supportedClaudeCodeVersions: [SCHEMA_CANDIDATE_VERSION],
+    });
+
+    expect(replay.status).toBe("partial");
+    expect(replay.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "invalid-result-shape",
+      "missing-terminal-result",
+    ]);
+    expect(
+      replay.events.some((event) => event.type === "adapter_completed"),
+    ).toBe(false);
+  });
+
+  test("requires known system notices to retain their published provenance shape", async () => {
+    const fixtureLines = (await readReplayFixture("schema-derived-text.jsonl"))
+      .trimEnd()
+      .split("\n");
+    fixtureLines.splice(
+      1,
+      0,
+      JSON.stringify({ status: null, subtype: "status", type: "system" }),
+    );
+
+    const replay = replayClaudeCodeStream(`${fixtureLines.join("\n")}\n`, {
+      supportedClaudeCodeVersions: [SCHEMA_CANDIDATE_VERSION],
+    });
+
+    expect(replay.status).toBe("partial");
+    expect(replay.diagnostics).toContainEqual({
+      code: "invalid-system-shape",
+      lineNumber: 2,
+      message: "System subtype `status` is missing required provenance fields.",
+    });
+    expect(replay.rawRecords[1]?.value).toMatchObject({
+      subtype: "status",
+      type: "system",
+    });
+  });
+
+  test("requires exactly one init record", async () => {
+    const fixtureLines = (await readReplayFixture("schema-derived-text.jsonl"))
+      .trimEnd()
+      .split("\n");
+    fixtureLines.splice(1, 0, fixtureLines[0] ?? "");
+
+    const replay = replayClaudeCodeStream(`${fixtureLines.join("\n")}\n`, {
+      supportedClaudeCodeVersions: [SCHEMA_CANDIDATE_VERSION],
+    });
+
+    expect(replay.status).toBe("partial");
+    expect(replay.trajectoryEvidence).toBe("degraded");
+    expect(replay.diagnostics).toContainEqual({
+      code: "duplicate-init",
+      lineNumber: 2,
+      message: "The stream contains more than one system/init record.",
+    });
+  });
+
   test("rejects a stream before normalization when the init version drifts", async () => {
     const replay = await replayFixture("negative-unsupported-version.jsonl");
 
     expect(replay.status).toBe("unsupported");
+    expect(replay.trajectoryEvidence).toBe("unavailable");
     expect(replay.observedClaudeCodeVersion).toBe("999.0.0");
     expect(replay.diagnostics[0]?.code).toBe("unsupported-version");
+    expect(replay.events).toEqual([]);
+    expect(replay.versionProvenance).toMatchObject({
+      evidenceClass: "schema-derived-or-synthetic-replay",
+      isLiveCompatibilityEvidence: false,
+      observedVersion: "999.0.0",
+      source: "system-init",
+      sourceLineNumber: 1,
+    });
   });
 });
