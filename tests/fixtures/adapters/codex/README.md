@@ -8,8 +8,11 @@ The `0.146.0/live-command-workspace` family came from one bounded, ephemeral,
 non-nested `codex exec --json` run in an isolated temporary Git repository.
 Identifiers and timestamps are replaced with stable markers. Event order,
 event fields, usage values, stdout/stderr separation, exit status, and the
-observed workspace bytes are otherwise retained.
+observed workspace after-state bytes are otherwise retained. No before-state
+manifest was captured, so this fixture proves file presence after invocation,
+not that Codex added or changed the file.
 
 The `synthetic-negative` family exists only to exercise replay degradation for
-malformed, partial, and additive unknown JSONL. Synthetic files must never be
-reported as proof of live Codex behavior.
+malformed, partial, additive unknown, hostile family-member, and unknown item
+discriminator JSONL. Synthetic files must never be reported as proof of live
+Codex behavior.

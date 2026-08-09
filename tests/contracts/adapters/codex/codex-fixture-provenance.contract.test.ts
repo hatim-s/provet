@@ -13,6 +13,11 @@ interface ManifestCapture {
   id: string;
   providerInvocation: boolean;
   source: string;
+  workspaceEvidence?: {
+    beforeStateCaptured: boolean;
+    claim: string;
+    classification: string;
+  };
 }
 
 interface CodexFixtureManifest {
@@ -53,6 +58,12 @@ test("every Codex fixture has source provenance and stable bytes", async () => {
       id: "live-command-workspace",
       providerInvocation: true,
       source: "live",
+      workspaceEvidence: {
+        beforeStateCaptured: false,
+        claim:
+          "file presence after invocation only; addition or modification is not proven",
+        classification: "after-state-only",
+      },
     }),
   );
 
@@ -71,7 +82,10 @@ test("provenance distinguishes observed behavior from evidence gaps", async () =
   ) as CodexFixtureManifest;
 
   expect(manifest.coverage.observed).toContain("usage");
-  expect(manifest.coverage.observed).toContain("workspace file addition");
+  expect(manifest.coverage.observed).toContain(
+    "workspace file presence in a hashed after-state",
+  );
+  expect(manifest.coverage.observed).not.toContain("workspace file addition");
   expect(manifest.coverage.notExercised).toContain("cancellation and signals");
   expect(manifest.coverage.notExercised).toContain("nested agent work");
   expect(manifest.coverage.notExercised).toContain("compaction");

@@ -11,14 +11,16 @@ Capture date: 2026-08-09.
 `codex exec --json` is a line-ordered native JSONL stream with no stream schema
 version, event sequence, or event timestamp in the observed capture. A
 successful run emitted `thread.started`, `turn.started`, command item lifecycle,
-an assistant message, and `turn.completed` usage. It exited `0`, changed the
-workspace, and still wrote operational warnings to stderr. Therefore the future
-adapter must decide success from the JSONL terminal state plus process exit, not
-from stderr emptiness.
+an assistant message, and `turn.completed` usage. It exited `0`, left a hashed
+workspace after-state, and still wrote operational warnings to stderr. Because
+no before-state manifest was captured, the after-state proves file presence but
+not an addition or modification. The future adapter must decide success from
+the JSONL terminal state plus process exit, not from stderr emptiness.
 
 The native stream is rich enough to begin `RUN-05` replay work without inventing
 message, command, or usage events. Raw JSONL, stderr, detected CLI version,
-process termination, and workspace snapshots remain mandatory provenance.
+process termination, and honestly classified workspace evidence remain
+mandatory provenance.
 Approval, cancellation/signal, compaction, nested-agent, MCP, web-search,
 file-change-item, provider-error, and parallel-item behavior was not exercised.
 Those capabilities must remain explicitly unsupported or compatibility-unknown
@@ -36,9 +38,9 @@ The evidence set deliberately separates three sources:
    authentication mode. `codex login status` reported saved ChatGPT
    authentication; no credential file or credential value was read.
 3. One bounded, ephemeral, non-nested live invocation captured sanitized
-   stdout, stderr, exit, usage, command lifecycle, and the resulting temporary
-   workspace bytes. A separate parse-time invalid-option invocation did not
-   reach the provider.
+   stdout, stderr, exit, usage, command lifecycle, and resulting temporary
+   workspace after-state bytes. No before-state workspace manifest was retained.
+   A separate parse-time invalid-option invocation did not reach the provider.
 
 The fixture manifest at
 `tests/fixtures/adapters/codex/manifest.json` records capture source, sanitized
@@ -130,13 +132,13 @@ documented existence is not sufficient evidence for exact field shapes.
 | stderr | Non-empty startup/model-cache/state warnings | Capture separately and bound it. Non-empty stderr is diagnostic provenance, not failure by itself. |
 | exit | `0` | Success still requires a recognized terminal JSONL event and no protocol truncation. |
 | signal | none | No cancellation or signal contract was established. |
-| workspace | One untracked file addition, eight bytes | Workspace effects are not fully represented by the observed JSONL; authoritative pre/post snapshots and diffs must come from the workspace subsystem. |
+| workspace | One eight-byte file present in the hashed after-state | No before-state was captured, so this does not prove an addition or modification. Authoritative effects require pre/post snapshots and diffs from the workspace subsystem. |
 
-The exact prompt's quoting produced an eight-byte file containing `"fixture`.
-That result is retained because the spike characterizes observed effects, not
-the intended content. The stream reported the shell command and exit `0`, but
-did not emit a separate file-change item. The future adapter must not infer a
-complete workspace diff from command text.
+The workspace after-state retained an eight-byte file containing `"fixture`.
+Those bytes are an observation after invocation only. The stream reported the
+shell command and exit `0`, but did not emit a separate file-change item, and no
+hashed before-state was retained. The future adapter must not infer an addition,
+modification, or complete workspace diff from command text or after-state bytes.
 
 The parse-time invalid-option capture emitted no stdout, wrote usage diagnostics
 to stderr, and exited `2`. It proves that an invocation can fail before any
@@ -160,7 +162,7 @@ add a public DTO.
 | `turn.completed.usage` | Target token measures | Each observed token category is lossless. Total input semantics must not be guessed from cached counts. Cost, currency, and latency remain `null`. |
 | stderr line | Adapter diagnostic | Preserve bounded/redacted bytes separately. Do not manufacture trajectory items from warnings. |
 | process exit/signal | Invocation termination | Exit is lossless. Signal mapping remains unsupported until captured. |
-| pre/post workspace snapshots | Workspace additions/deletions/modifications | External authoritative evidence. Never derive solely from stream item or command content. |
+| pre/post workspace snapshots | Workspace additions/deletions/modifications | External authoritative evidence when both states are captured and tied. This capture has only an after-state; never derive an effect solely from stream content or after-state bytes. |
 
 No live evidence established approval events, tool-result pairing beyond
 commands, nested-agent parentage, compaction boundaries, parallel ordering, or
@@ -180,10 +182,11 @@ rules:
 3. On EOF without `turn.completed` or `turn.failed`, retain open item IDs, mark
    the trajectory partial, and fail protocol completion even when the process
    exit is `0`.
-4. Retain additive unknown top-level events verbatim and mark compatibility as
-   degraded. Unknown data may be ignored only for a consumer that can prove it
-   is irrelevant; trajectory graders must not receive a silent completeness
-   claim.
+4. Enumerate only exact evidenced top-level event types and item discriminators.
+   Retain unknown records verbatim, including new members under familiar
+   `turn.*` and `item.*` prefixes, and mark trajectory completeness degraded.
+   Unknown data may be ignored only for a consumer that can prove it is
+   irrelevant; trajectory graders must not receive a silent completeness claim.
 5. A terminal event and process termination are jointly authoritative. An
    `error` event is evidence, not by itself proof that no later terminal record
    exists. A non-zero exit remains invocation failure even if a terminal prefix
@@ -207,8 +210,10 @@ therefore bind to the detected CLI version and captured fixtures:
 - A newly supported version needs sanitized provenance, all replay fixtures,
   secret scan, owned deterministic tests, and an opt-in live smoke reported
   separately. Fixture families remain version-addressed.
-- Unknown events within an otherwise supported exact version are retained and
-  surfaced as protocol drift. They do not silently widen the supported range.
+- Unknown event variants or item discriminators within an otherwise supported
+  exact version are retained and surfaced as lossy protocol drift. Prefix
+  membership does not make a variant supported, and drift does not silently
+  widen the supported range or preserve a completeness claim.
 - Persist detected version and redacted raw native evidence with every trial so
   later import, debugging, and compatibility review can reproduce the decision.
 
@@ -224,10 +229,10 @@ an incidental parser choice.
 | Command start/result | Live | Implement exact observed shape; rendered command is not argv. |
 | Usage | Live | Preserve five observed token categories; cost and latency unknown. |
 | Successful exit with stderr | Live | Terminal + exit decides success; stderr is diagnostic. |
-| Workspace addition | Live external snapshot | Consume workspace subsystem evidence; stream alone is incomplete. |
+| Workspace after-state file presence | Live hashed after-state only | Not authoritative evidence of an addition or modification; RUN-06 must produce tied pre/post evidence. |
 | Parse-time CLI error | Live local validation | Support zero-event non-zero exit. |
 | Malformed/partial JSONL | Synthetic negative | Fail protocol with retained prefix; not live compatibility. |
-| Additive unknown event | Synthetic negative | Retain and degrade; do not silently claim complete trajectory. |
+| Additive unknown event or item discriminator | Synthetic negative | Retain raw, record the unsupported discriminator, and degrade completeness even under familiar prefixes. |
 | Approval request/denial | Not exercised | Unsupported/unknown; no mapping may be claimed. |
 | Cancellation/signals | Not exercised | Unsupported/unknown; supervisor evidence must be captured before support. |
 | Compaction | Not exercised | Unsupported/unknown; do not infer a message or token boundary. |
@@ -241,8 +246,9 @@ an incidental parser choice.
 The owned tests provide three independent gates:
 
 - replay tests prove raw-order retention, item lifecycle, final message, usage,
-  separate stderr/exit/workspace evidence, malformed-line reporting, partial
-  open-item retention, and additive unknown-event preservation;
+  separate stderr/exit/workspace after-state evidence, malformed-line reporting,
+  partial open-item retention, and hostile unknown event/item preservation with
+  degraded completeness;
 - provenance contract tests verify source classification and SHA-256 of every
   manifest-owned fixture byte;
 - secret-scan contract tests reject credential-shaped values, private keys,

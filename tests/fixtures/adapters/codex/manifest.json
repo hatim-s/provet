@@ -24,7 +24,7 @@
       "command lifecycle and exit status",
       "usage values",
       "stdout/stderr separation",
-      "workspace relative path, byte length, and bytes"
+      "workspace after-state relative path, byte length, and bytes"
     ]
   },
   "captures": [
@@ -50,6 +50,11 @@
       "nestedAgentWork": "prohibited by prompt and orchestration policy; not exercised",
       "approvalBehavior": "approval policy was never; no approval event was requested or observed",
       "signal": null,
+      "workspaceEvidence": {
+        "classification": "after-state-only",
+        "beforeStateCaptured": false,
+        "claim": "file presence after invocation only; addition or modification is not proven"
+      },
       "files": [
         {
           "path": "0.146.0/live-command-workspace/stdout.jsonl",
@@ -102,6 +107,14 @@
         {
           "path": "synthetic-negative/unknown-event.jsonl",
           "sha256": "944690d43aaed510e451ecc0d2ef2778715e019ba56e819dc4c63767ee6277c4"
+        },
+        {
+          "path": "synthetic-negative/unknown-turn-event.jsonl",
+          "sha256": "c181f5a838add95e9d94b930f42fa5566438a274758a48d3cd20408eddfa2777"
+        },
+        {
+          "path": "synthetic-negative/unknown-item-type.jsonl",
+          "sha256": "30a731520e48b19ec2918ea86977289d98d43c043a812cea3b481bd5d5aecaf7"
         }
       ]
     }
@@ -113,7 +126,7 @@
       "usage",
       "successful exit",
       "parse-time usage error",
-      "workspace file addition",
+      "workspace file presence in a hashed after-state",
       "successful run with stderr warnings"
     ],
     "notExercised": [

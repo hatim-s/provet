@@ -10,9 +10,11 @@ interface ReplayedCodexEvent {
 interface CodexStreamReplay {
   events: ReplayedCodexEvent[];
   isTerminal: boolean;
+  isTrajectoryComplete: boolean;
   malformedLineNumber: number | null;
   openItemIdentifiers: string[];
   unknownEventTypes: string[];
+  unknownItemTypes: string[];
 }
 
 interface NativeCodexEvent extends Record<string, unknown> {
@@ -22,12 +24,22 @@ interface NativeCodexEvent extends Record<string, unknown> {
 
 interface NativeCodexItem extends Record<string, unknown> {
   id: string;
+  type: string;
 }
 
 const fixtureRoot = resolve(
   import.meta.dir,
   "../../../fixtures/adapters/codex",
 );
+
+const evidencedEventTypes = new Set([
+  "thread.started",
+  "turn.started",
+  "item.started",
+  "item.completed",
+  "turn.completed",
+]);
+const evidencedItemTypes = new Set(["agent_message", "command_execution"]);
 
 /** Returns whether an unknown JSON value is a non-null object record. */
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -51,17 +63,19 @@ function isNativeCodexItem(value: unknown): value is NativeCodexItem {
   }
 
   const possibleItem = value as Partial<NativeCodexItem>;
-  return typeof possibleItem.id === "string";
+  return (
+    typeof possibleItem.id === "string" && typeof possibleItem.type === "string"
+  );
 }
 
-/** Returns whether a native event type belongs to the observed/documented families. */
-function isKnownEventType(eventType: string): boolean {
-  return (
-    eventType === "thread.started" ||
-    eventType === "error" ||
-    eventType.startsWith("turn.") ||
-    eventType.startsWith("item.")
-  );
+/** Returns whether an exact native event type has live fixture evidence. */
+function isEvidencedEventType(eventType: string): boolean {
+  return evidencedEventTypes.has(eventType);
+}
+
+/** Returns whether an exact native item discriminator has live fixture evidence. */
+function isEvidencedItemType(itemType: string): boolean {
+  return evidencedItemTypes.has(itemType);
 }
 
 /** Replays JSONL without discarding raw lines, unknown events, or an incomplete prefix. */
@@ -69,6 +83,7 @@ function replayCodexJsonLines(jsonLines: string): CodexStreamReplay {
   const events: ReplayedCodexEvent[] = [];
   const openItemIdentifiers = new Set<string>();
   const unknownEventTypes = new Set<string>();
+  const unknownItemTypes = new Set<string>();
   let malformedLineNumber: number | null = null;
 
   const lines = jsonLines.split("\n");
@@ -91,12 +106,15 @@ function replayCodexJsonLines(jsonLines: string): CodexStreamReplay {
     }
 
     events.push({ rawLine, value: parsedValue });
-    if (!isKnownEventType(parsedValue.type)) {
+    if (!isEvidencedEventType(parsedValue.type)) {
       unknownEventTypes.add(parsedValue.type);
     }
 
     const item = parsedValue.item;
     if (isNativeCodexItem(item)) {
+      if (!isEvidencedItemType(item.type)) {
+        unknownItemTypes.add(item.type);
+      }
       if (parsedValue.type === "item.started") {
         openItemIdentifiers.add(item.id);
       } else if (parsedValue.type === "item.completed") {
@@ -106,14 +124,22 @@ function replayCodexJsonLines(jsonLines: string): CodexStreamReplay {
   }
 
   const terminalEventType = events.at(-1)?.value.type;
+  const isTerminal =
+    terminalEventType === "turn.completed" ||
+    terminalEventType === "turn.failed";
   return {
     events,
-    isTerminal:
-      terminalEventType === "turn.completed" ||
-      terminalEventType === "turn.failed",
+    isTerminal,
+    isTrajectoryComplete:
+      isTerminal &&
+      malformedLineNumber === null &&
+      openItemIdentifiers.size === 0 &&
+      unknownEventTypes.size === 0 &&
+      unknownItemTypes.size === 0,
     malformedLineNumber,
     openItemIdentifiers: [...openItemIdentifiers],
     unknownEventTypes: [...unknownEventTypes],
+    unknownItemTypes: [...unknownItemTypes],
   };
 }
 
@@ -127,8 +153,10 @@ describe("Codex JSONL replay spike", () => {
 
     expect(replay.malformedLineNumber).toBeNull();
     expect(replay.isTerminal).toBe(true);
+    expect(replay.isTrajectoryComplete).toBe(true);
     expect(replay.openItemIdentifiers).toEqual([]);
     expect(replay.unknownEventTypes).toEqual([]);
+    expect(replay.unknownItemTypes).toEqual([]);
     expect(replay.events.map(({ value }) => value.type)).toEqual([
       "thread.started",
       "turn.started",
@@ -167,6 +195,7 @@ describe("Codex JSONL replay spike", () => {
     expect(replay.events).toHaveLength(2);
     expect(replay.malformedLineNumber).toBe(3);
     expect(replay.isTerminal).toBe(false);
+    expect(replay.isTrajectoryComplete).toBe(false);
   });
 
   test("marks premature EOF as partial and retains the in-progress item", async () => {
@@ -178,6 +207,7 @@ describe("Codex JSONL replay spike", () => {
 
     expect(replay.malformedLineNumber).toBeNull();
     expect(replay.isTerminal).toBe(false);
+    expect(replay.isTrajectoryComplete).toBe(false);
     expect(replay.openItemIdentifiers).toEqual(["item_0"]);
   });
 
@@ -189,8 +219,36 @@ describe("Codex JSONL replay spike", () => {
     const replay = replayCodexJsonLines(stdout);
 
     expect(replay.isTerminal).toBe(true);
+    expect(replay.isTrajectoryComplete).toBe(false);
     expect(replay.unknownEventTypes).toEqual(["future.event"]);
     expect(replay.events[2]?.rawLine).toContain("synthetic additive event");
+  });
+
+  test("degrades an unknown turn family member despite a terminal event", async () => {
+    const stdout = await readFile(
+      resolve(fixtureRoot, "synthetic-negative/unknown-turn-event.jsonl"),
+      "utf8",
+    );
+    const replay = replayCodexJsonLines(stdout);
+
+    expect(replay.isTerminal).toBe(true);
+    expect(replay.isTrajectoryComplete).toBe(false);
+    expect(replay.unknownEventTypes).toEqual(["turn.future"]);
+    expect(replay.events[2]?.rawLine).toContain("turn.future");
+  });
+
+  test("degrades and preserves an unknown item discriminator", async () => {
+    const stdout = await readFile(
+      resolve(fixtureRoot, "synthetic-negative/unknown-item-type.jsonl"),
+      "utf8",
+    );
+    const replay = replayCodexJsonLines(stdout);
+
+    expect(replay.isTerminal).toBe(true);
+    expect(replay.isTrajectoryComplete).toBe(false);
+    expect(replay.unknownEventTypes).toEqual([]);
+    expect(replay.unknownItemTypes).toEqual(["future_item"]);
+    expect(replay.events[2]?.rawLine).toContain("future_item");
   });
 
   test("keeps successful stderr separate from exit and workspace evidence", async () => {
