@@ -1,0 +1,208 @@
+{
+  "schemaVersion": 1,
+  "roadmapNode": "SPI-01",
+  "recordedAt": "2026-08-09T11:44:04Z",
+  "localGate": {
+    "cliInstalled": true,
+    "cliVersion": "2.1.226",
+    "authenticationStatusCommandExitCode": 1,
+    "authenticationAvailable": false,
+    "liveProviderInvocations": 0,
+    "liveSpendUsd": 0,
+    "liveCompatibilityStatus": "unavailable-authentication"
+  },
+  "schemaSource": {
+    "name": "@anthropic-ai/claude-agent-sdk",
+    "version": "0.3.226",
+    "declaredClaudeCodeVersion": "2.1.226",
+    "relationship": "Published SDK package metadata declares Claude Code version 2.1.226, matching the installed CLI at observation time.",
+    "tarballUrl": "https://registry.npmjs.org/@anthropic-ai/claude-agent-sdk/-/claude-agent-sdk-0.3.226.tgz",
+    "tarballSha256": "d53725ddb1e380e1925a57b8cea2c589bffeec2ff57bd42fd450d961f6b151ce",
+    "npmIntegrity": "sha512-RvaZCZSKGjNIN/bDrQbyq/XkjVaUAPThxFrwFz2jdl6DvGnUtsGlt7hmPsaGC6BDudbA8yvkZFSqaJveK3WhfQ==",
+    "inspectedFiles": ["sdk.d.ts", "package.json"]
+  },
+  "documentationSources": [
+    "https://docs.anthropic.com/en/docs/claude-code/cli-usage",
+    "https://platform.claude.com/docs/en/agent-sdk/typescript",
+    "https://platform.claude.com/cookbook/claude-agent-sdk-07-hosting-the-agent",
+    "https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md"
+  ],
+  "fixtures": [
+    {
+      "file": "negative-duplicate-tool-id.jsonl",
+      "sha256": "a35a678146d2876e8501c5fff536c5af45cedcd905cbd47b29c69cd29b9c24f2",
+      "scenario": "duplicate pending tool identifier with one matching result",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-invalid-nested-result.jsonl",
+      "sha256": "6dd6d2e03d2ecc25093df9bf206673203186a40f32b477cae39d2c716d9b552b",
+      "scenario": "terminal result with invalid usage, model usage, and permission denial shapes",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-invalid-terminal-reason.jsonl",
+      "sha256": "1d3355b83b6f1e0e8689ae266a225aa5e5da7dfd43e9b24a806e2a95e74efff7",
+      "scenario": "terminal result with a non-string termination reason",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-malformed-line.jsonl",
+      "sha256": "fe4c0d5ebcdb76285ff4fa028b1c23c884498f4c7cffb56b7b5b9f46e1b791b1",
+      "scenario": "malformed JSONL record",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-malformed-assistant.jsonl",
+      "sha256": "21419b6fae90ab7cb2a9dccf17d86fb40ee12ec97dacf4eff09b31d286f941c0",
+      "scenario": "assistant message with a non-array content field",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-minimal-compact-boundary.jsonl",
+      "sha256": "9fe1256d077a96d65c5bbcc31963f0d052896025b229db1e4333b77c07d5d248",
+      "scenario": "recognized compact-boundary system subtype without its required payload",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-minimal-rate-limit-event.jsonl",
+      "sha256": "8ea3e46ed704d2259e410a3a6988eb227ddf3c889040e75f36e10f27a6ab44b1",
+      "scenario": "recognized rate-limit discriminator without its required payload",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-minimal-stream-event.jsonl",
+      "sha256": "2db3e9232b26ba7535d1844b57b1746a5dd0c0b6dbf1c6f163037b5ea4990643",
+      "scenario": "recognized partial-assistant discriminator without its required payload",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-minimal-tool-progress.jsonl",
+      "sha256": "d07313ca2dc8ad36dcc355ca96556613274eaabb95b165d8bbb15f504f919326",
+      "scenario": "recognized tool-progress discriminator without its required payload",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-missing-init.jsonl",
+      "sha256": "70bebba334566cfb09bc9dc5ee27704c72bf1669665d7dd36cdc742caa011ee1",
+      "scenario": "terminal result without required init and version framing",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-partial-trajectory.jsonl",
+      "sha256": "22e0d24361bcb498ba8fecda9c6977f4359f9702dda0b2861865977badf2b0a3",
+      "scenario": "end of stdout before result",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-unknown-event.jsonl",
+      "sha256": "17bf4fd3b36334cf1fe695f299bf77aa4fb65024a87eba5c523dbbe57a144c47",
+      "scenario": "unknown top-level event with later result",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-unknown-result-subtype.jsonl",
+      "sha256": "24ddca38a1ff1a17a629a31242c71c701aacec2542c7344612d60aeba886c8ec",
+      "scenario": "unknown terminal result subtype with otherwise coherent fields",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-unknown-system-subtype.jsonl",
+      "sha256": "f49767d172ef04ea7c3c0494cb55be98f05d016926ea089ca2c74561eaf0b6e3",
+      "scenario": "unknown system notice subtype before a coherent result",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-unknown-user-block.jsonl",
+      "sha256": "fd4cb38de3e6cd7bf9d0d13751939ae8326356a84e2a4ce0edb6d293d66d1d0c",
+      "scenario": "user message with an unknown content block discriminator",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-unsupported-version.jsonl",
+      "sha256": "b538dcc6284fe12dbf0eec987d3e2909730c46328dccc950a70ee15b2c06e390",
+      "scenario": "unsupported init version",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "schema-derived-budget-limit.jsonl",
+      "sha256": "7073911ffd8f141c8a95e47f23b6bb92913c19166e0f53c0705960e5e06be95f",
+      "scenario": "maximum budget terminal result",
+      "evidenceClass": "schema-derived",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "schema-derived-cancellation.jsonl",
+      "sha256": "9b83352face894b58005dd4a0b0d7ce2f62d0da7f94f3b88d9f79b50a7dddf5f",
+      "scenario": "aborted tool terminal result",
+      "evidenceClass": "schema-derived",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "schema-derived-parallel-tools.jsonl",
+      "sha256": "f8c28764a4fb8700115b1e0f5c247dab5e5924a00d9a7b0fad8e6d849c43c5c0",
+      "scenario": "two tool calls in one assistant content array",
+      "evidenceClass": "schema-derived",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "schema-derived-provider-error.jsonl",
+      "sha256": "a5cd594bde82ec5f2769f9c6d360d70f365b49d75937a615cc3347ab4640d512",
+      "scenario": "assistant provider error followed by terminal failure",
+      "evidenceClass": "schema-derived",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "schema-derived-text.jsonl",
+      "sha256": "d4f580289dd269d10689e92541b7746af6c02d69e2fefe29e46f133e24da4567",
+      "scenario": "text-only successful result",
+      "evidenceClass": "schema-derived",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "schema-derived-tool-error.jsonl",
+      "sha256": "b2debb83fc0d825635e9a626a700b6b28babe0492412506c524d58f0688d890d",
+      "scenario": "tool result error followed by successful query result",
+      "evidenceClass": "schema-derived",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "schema-derived-tool.jsonl",
+      "sha256": "7e3998e7bf3e92c5976b40897be45f9d0f1587cb62cbb1cc5bee4027edcf02a1",
+      "scenario": "single tool call and result",
+      "evidenceClass": "schema-derived",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "schema-derived-workspace-edit.jsonl",
+      "sha256": "338e7aab8a977cff8ab18a6ac2f2c61724bdde7f64a29c626b45533130355ac3",
+      "scenario": "workspace write intent without filesystem proof",
+      "evidenceClass": "schema-derived",
+      "isLiveCompatibilityEvidence": false
+    }
+  ],
+  "sanitization": {
+    "transforms": [
+      "Replaced session, message, and tool identifiers with deterministic fixture identifiers.",
+      "Replaced model names, paths, prompts, tool outputs, and errors with synthetic values.",
+      "Removed all account, organization, host, user, and credential fields or set documented non-secret sentinels."
+    ],
+    "rawOrderingRule": "JSONL line order and content-array order are immutable fixture evidence; hashes cover final sanitized bytes."
+  }
+}
