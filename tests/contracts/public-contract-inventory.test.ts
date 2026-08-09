@@ -108,7 +108,14 @@ async function readDeclaredNames(
 interface SemanticStructuralDeclaration {
   declaration: ts.Declaration;
   name: string;
+  referenceNode: ts.Node;
+  semanticType: ts.Type;
   signature: string;
+}
+
+interface ExposedSemanticType {
+  referenceNode: ts.Node;
+  semanticType: ts.Type;
 }
 
 interface OwnedSemanticSignature {
@@ -452,27 +459,116 @@ function isObjectShape(semanticType: ts.Type): boolean {
     : Boolean(semanticType.flags & ts.TypeFlags.Object);
 }
 
+/** Reads a callable parameter's checker-resolved public type. */
+function readParameterSemanticType(
+  parameterSymbol: ts.Symbol,
+  signatureDeclaration: ts.SignatureDeclaration | undefined,
+  typeChecker: ts.TypeChecker,
+): ExposedSemanticType | null {
+  const parameterDeclaration =
+    parameterSymbol.valueDeclaration ?? signatureDeclaration;
+  return parameterDeclaration
+    ? readAwaitedSemanticType(
+        typeChecker.getTypeOfSymbolAtLocation(
+          parameterSymbol,
+          parameterDeclaration,
+        ),
+        parameterDeclaration,
+        typeChecker,
+      )
+    : null;
+}
+
+/** Unwraps an awaited public type while retaining its source reference node. */
+function readAwaitedSemanticType(
+  semanticType: ts.Type,
+  referenceNode: ts.Node,
+  typeChecker: ts.TypeChecker,
+): ExposedSemanticType {
+  return {
+    referenceNode,
+    semanticType: typeChecker.getAwaitedType(semanticType) ?? semanticType,
+  };
+}
+
+/** Reads every input and output object surface exposed by callable signatures. */
+function readCallableSignatureTypes(
+  callSignatures: readonly ts.Signature[],
+  fallbackReferenceNode: ts.Node,
+  typeChecker: ts.TypeChecker,
+  isReturnIncluded = true,
+): readonly ExposedSemanticType[] {
+  return callSignatures.flatMap((callSignature) => {
+    const signatureDeclaration = callSignature.getDeclaration();
+    const parameterTypes = callSignature
+      .getParameters()
+      .map((parameterSymbol) =>
+        readParameterSemanticType(
+          parameterSymbol,
+          signatureDeclaration,
+          typeChecker,
+        ),
+      )
+      .filter(
+        (parameterType): parameterType is ExposedSemanticType =>
+          parameterType !== null,
+      );
+    if (!isReturnIncluded) {
+      return parameterTypes;
+    }
+
+    const returnReferenceNode =
+      signatureDeclaration?.type ??
+      signatureDeclaration ??
+      fallbackReferenceNode;
+    return [
+      ...parameterTypes,
+      readAwaitedSemanticType(
+        typeChecker.getReturnTypeOfSignature(callSignature),
+        returnReferenceNode,
+        typeChecker,
+      ),
+    ];
+  });
+}
+
 /** Reads the public object types exposed by an exported value declaration. */
-function readValueDeclarationTypes(
+function readValueDeclarationSurfaceTypes(
   declaration:
     | ts.ClassDeclaration
     | ts.FunctionDeclaration
     | ts.VariableDeclaration,
   typeChecker: ts.TypeChecker,
-): readonly ts.Type[] {
+): readonly ExposedSemanticType[] {
   if (ts.isClassDeclaration(declaration)) {
     if (!declaration.name) {
       return [];
     }
     const classSymbol = typeChecker.getSymbolAtLocation(declaration.name);
-    return classSymbol
-      ? [typeChecker.getDeclaredTypeOfSymbol(classSymbol)]
-      : [];
+    if (!classSymbol) {
+      return [];
+    }
+    const classValueType = typeChecker.getTypeOfSymbolAtLocation(
+      classSymbol,
+      declaration,
+    );
+    return [
+      {
+        referenceNode: declaration,
+        semanticType: typeChecker.getDeclaredTypeOfSymbol(classSymbol),
+      },
+      ...readCallableSignatureTypes(
+        classValueType.getConstructSignatures(),
+        declaration,
+        typeChecker,
+        false,
+      ),
+    ];
   }
   if (ts.isFunctionDeclaration(declaration)) {
     const callSignature = typeChecker.getSignatureFromDeclaration(declaration);
     return callSignature
-      ? [typeChecker.getReturnTypeOfSignature(callSignature)]
+      ? readCallableSignatureTypes([callSignature], declaration, typeChecker)
       : [];
   }
 
@@ -486,20 +582,15 @@ function readValueDeclarationTypes(
     variableSymbol,
     declaration,
   );
-  const constructedTypes = variableType
-    .getConstructSignatures()
-    .map((constructSignature) =>
-      typeChecker.getReturnTypeOfSignature(constructSignature),
-    );
-  if (constructedTypes.length > 0) {
-    return constructedTypes;
+  const constructedTypes = variableType.getConstructSignatures();
+  const callableTypes = variableType.getCallSignatures();
+  if (constructedTypes.length > 0 || callableTypes.length > 0) {
+    return [
+      ...readCallableSignatureTypes(constructedTypes, declaration, typeChecker),
+      ...readCallableSignatureTypes(callableTypes, declaration, typeChecker),
+    ];
   }
-  const returnedTypes = variableType
-    .getCallSignatures()
-    .map((callSignature) =>
-      typeChecker.getReturnTypeOfSignature(callSignature),
-    );
-  return returnedTypes.length > 0 ? returnedTypes : [variableType];
+  return [readAwaitedSemanticType(variableType, declaration, typeChecker)];
 }
 
 /** Reads semantic signatures for owned types and exported object surfaces. */
@@ -519,17 +610,19 @@ function readSemanticStructuralDeclarations(
   const recordStructuralDeclaration = (
     declaration: ts.Declaration,
     declarationName: string,
-    semanticType: ts.Type,
+    exposedType: ExposedSemanticType,
   ): void => {
-    if (!isObjectShape(semanticType)) {
+    if (!isObjectShape(exposedType.semanticType)) {
       return;
     }
     structuralDeclarations.push({
       declaration,
       name: declarationName,
+      referenceNode: exposedType.referenceNode,
+      semanticType: exposedType.semanticType,
       signature: readSemanticTypeSignature(
-        semanticType,
-        declaration,
+        exposedType.semanticType,
+        exposedType.referenceNode,
         typeChecker,
       ),
     });
@@ -540,11 +633,10 @@ function readSemanticStructuralDeclarations(
       ts.isInterfaceDeclaration(statement) ||
       ts.isTypeAliasDeclaration(statement)
     ) {
-      recordStructuralDeclaration(
-        statement,
-        statement.name.text,
-        typeChecker.getTypeAtLocation(statement),
-      );
+      recordStructuralDeclaration(statement, statement.name.text, {
+        referenceNode: statement,
+        semanticType: typeChecker.getTypeAtLocation(statement),
+      });
       continue;
     }
 
@@ -554,7 +646,7 @@ function readSemanticStructuralDeclarations(
       statement.name &&
       exportedLocalNames.has(statement.name.text)
     ) {
-      for (const exposedType of readValueDeclarationTypes(
+      for (const exposedType of readValueDeclarationSurfaceTypes(
         statement,
         typeChecker,
       )) {
@@ -576,7 +668,7 @@ function readSemanticStructuralDeclarations(
         ) {
           continue;
         }
-        for (const exposedType of readValueDeclarationTypes(
+        for (const exposedType of readValueDeclarationSurfaceTypes(
           variableDeclaration,
           typeChecker,
         )) {
@@ -638,6 +730,18 @@ function doesDeclarationReuseOwner(
   ownedSignature: OwnedSemanticSignature,
   typeChecker: ts.TypeChecker,
 ): boolean {
+  const declarationSymbol =
+    structuralDeclaration.semanticType.aliasSymbol ??
+    structuralDeclaration.semanticType.symbol;
+  const ownerSymbol =
+    ownedSignature.ownerType.aliasSymbol ?? ownedSignature.ownerType.symbol;
+  if (
+    structuralDeclaration.semanticType === ownedSignature.ownerType ||
+    (declarationSymbol && declarationSymbol === ownerSymbol)
+  ) {
+    return true;
+  }
+
   let doesReuseOwner = false;
 
   /** Finds a referenced type whose checker-resolved semantics equal the owner. */
@@ -657,13 +761,13 @@ function doesDeclarationReuseOwner(
 
     ts.forEachChild(node, inspectReference);
   };
-  inspectReference(structuralDeclaration.declaration);
+  inspectReference(structuralDeclaration.referenceNode);
 
   return (
     doesReuseOwner &&
     readSemanticTypeSignature(
       ownedSignature.ownerType,
-      structuralDeclaration.declaration,
+      structuralDeclaration.referenceNode,
       typeChecker,
     ) === structuralDeclaration.signature
   );
@@ -819,7 +923,7 @@ describe("public contract inventory", () => {
     }
   });
 
-  test("detects compiling interface, intersection, heritage, and class DTO copies", async () => {
+  test("detects compiling DTO copies across declarations and callable surfaces", async () => {
     const sourcePaths = await listTypeScriptFiles(SOURCE_ROOT);
     const hostileSourcePath = resolve(
       SOURCE_ROOT,
@@ -881,9 +985,69 @@ describe("public contract inventory", () => {
         function createReusedInvocationMeasurements(): InvocationMeasurements {
           return reusedInvocationMeasurementsValue;
         }
+        function consumeAlternateInvocationMeasurements(measurements: {
+          cost: MonetaryAmount | null;
+          durationMs: number | null;
+          tokens: TokenUsage | null;
+        }): void {
+          void measurements;
+        }
+        const consumeAlternateInvocationMeasurementsValue = (measurements: {
+          cost: MonetaryAmount | null;
+          durationMs: number | null;
+          tokens: TokenUsage | null;
+        }): void => {
+          void measurements;
+        };
+        function consumeReusedInvocationMeasurements(
+          measurements: InvocationMeasurements,
+        ): void {
+          void measurements;
+        }
+        function consumePromisedAlternateInvocationMeasurements(
+          measurements: Promise<{
+            cost: MonetaryAmount | null;
+            durationMs: number | null;
+            tokens: TokenUsage | null;
+          }>,
+        ): void {
+          void measurements;
+        }
+        function consumePromisedReusedInvocationMeasurements(
+          measurements: Promise<InvocationMeasurements>,
+        ): void {
+          void measurements;
+        }
+        async function createAlternateInvocationMeasurements(): Promise<{
+          cost: MonetaryAmount | null;
+          durationMs: number | null;
+          tokens: TokenUsage | null;
+        }> {
+          return reusedInvocationMeasurementsValue;
+        }
+        const createAlternateInvocationMeasurementsValue = async (): Promise<{
+          cost: MonetaryAmount | null;
+          durationMs: number | null;
+          tokens: TokenUsage | null;
+        }> => reusedInvocationMeasurementsValue;
+        async function createAsyncReusedInvocationMeasurements(): Promise<InvocationMeasurements> {
+          return reusedInvocationMeasurementsValue;
+        }
+        async function createInferredAsyncReusedInvocationMeasurements() {
+          return reusedInvocationMeasurementsValue;
+        }
 
         export {
           AlternateInvocationMeasurementsClass,
+          consumeAlternateInvocationMeasurements,
+          consumeAlternateInvocationMeasurementsValue,
+          consumePromisedAlternateInvocationMeasurements,
+          consumePromisedReusedInvocationMeasurements,
+          consumeReusedInvocationMeasurements,
+          createAlternateInvocationMeasurements,
+          createAlternateInvocationMeasurementsValue,
+          createAsyncReusedInvocationMeasurements,
+          createInferredAsyncReusedInvocationMeasurements,
           createReusedInvocationMeasurements,
           ReusedInvocationMeasurementsClass,
           reusedInvocationMeasurementsValue,
@@ -909,6 +1073,11 @@ describe("public contract inventory", () => {
       "SplitInvocationMeasurements",
       "HeritageInvocationMeasurements",
       "AlternateInvocationMeasurementsClass",
+      "consumeAlternateInvocationMeasurements",
+      "consumeAlternateInvocationMeasurementsValue",
+      "consumePromisedAlternateInvocationMeasurements",
+      "createAlternateInvocationMeasurements",
+      "createAlternateInvocationMeasurementsValue",
     ]) {
       expect(
         hostileDeclarations.map((declaration) => declaration.name),
@@ -927,6 +1096,10 @@ describe("public contract inventory", () => {
       "ReusedInvocationMeasurementsClass",
       "reusedInvocationMeasurementsValue",
       "createReusedInvocationMeasurements",
+      "consumeReusedInvocationMeasurements",
+      "consumePromisedReusedInvocationMeasurements",
+      "createAsyncReusedInvocationMeasurements",
+      "createInferredAsyncReusedInvocationMeasurements",
     ]) {
       const reusedDeclaration = hostileDeclarations.find(
         (declaration) => declaration.name === reusedName,

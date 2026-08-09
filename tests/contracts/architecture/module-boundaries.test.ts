@@ -197,6 +197,19 @@ function isAmbientHostIdentifier(
     return false;
   }
 
+  return isAmbientNamedIdentifier(identifier, identifier.text, typeChecker);
+}
+
+/** Reports whether a named identifier resolves outside repository source. */
+function isAmbientNamedIdentifier(
+  identifier: ts.Identifier,
+  expectedName: string,
+  typeChecker: ts.TypeChecker,
+): boolean {
+  if (identifier.text !== expectedName) {
+    return false;
+  }
+
   const symbol = typeChecker.getSymbolAtLocation(identifier);
   return (
     !symbol ||
@@ -254,6 +267,113 @@ function readUnwrappedExpression(expression: ts.Expression): ts.Expression {
   return expression;
 }
 
+/** Reports whether an expression is callable or constructable at runtime. */
+function isCallableRuntimeExpression(
+  expression: ts.Expression,
+  typeChecker: ts.TypeChecker,
+): boolean {
+  const runtimeType = typeChecker.getTypeAtLocation(expression);
+  return (
+    runtimeType.getCallSignatures().length > 0 ||
+    runtimeType.getConstructSignatures().length > 0
+  );
+}
+
+/** Resolves ambient prototype-reader methods through local aliases. */
+function isAmbientPrototypeReader(
+  expression: ts.Expression,
+  typeChecker: ts.TypeChecker,
+  inspectedSymbols: ReadonlySet<ts.Symbol> = new Set(),
+): boolean {
+  const unwrappedExpression = readUnwrappedExpression(expression);
+  if (ts.isIdentifier(unwrappedExpression)) {
+    const symbol = typeChecker.getSymbolAtLocation(unwrappedExpression);
+    const resolvedSymbol = symbol
+      ? readResolvedSymbol(symbol, typeChecker)
+      : undefined;
+    if (!resolvedSymbol || inspectedSymbols.has(resolvedSymbol)) {
+      return false;
+    }
+
+    const nestedInspectedSymbols = new Set(inspectedSymbols);
+    nestedInspectedSymbols.add(resolvedSymbol);
+    return Boolean(
+      resolvedSymbol.declarations?.some(
+        (declaration) =>
+          ts.isVariableDeclaration(declaration) &&
+          declaration.initializer &&
+          isAmbientPrototypeReader(
+            declaration.initializer,
+            typeChecker,
+            nestedInspectedSymbols,
+          ),
+      ),
+    );
+  }
+
+  if (
+    !ts.isPropertyAccessExpression(unwrappedExpression) &&
+    !ts.isElementAccessExpression(unwrappedExpression)
+  ) {
+    return false;
+  }
+
+  const prototypeOwner = readUnwrappedExpression(
+    unwrappedExpression.expression,
+  );
+  return (
+    readAccessedPropertyName(unwrappedExpression) === "getPrototypeOf" &&
+    ts.isIdentifier(prototypeOwner) &&
+    (isAmbientNamedIdentifier(prototypeOwner, "Object", typeChecker) ||
+      isAmbientNamedIdentifier(prototypeOwner, "Reflect", typeChecker))
+  );
+}
+
+/** Traces prototype reads whose input is a callable runtime value. */
+function isCallablePrototypeExpression(
+  expression: ts.Expression,
+  typeChecker: ts.TypeChecker,
+  inspectedSymbols: ReadonlySet<ts.Symbol> = new Set(),
+): boolean {
+  const unwrappedExpression = readUnwrappedExpression(expression);
+  if (ts.isIdentifier(unwrappedExpression)) {
+    const symbol = typeChecker.getSymbolAtLocation(unwrappedExpression);
+    const resolvedSymbol = symbol
+      ? readResolvedSymbol(symbol, typeChecker)
+      : undefined;
+    if (!resolvedSymbol || inspectedSymbols.has(resolvedSymbol)) {
+      return false;
+    }
+
+    const nestedInspectedSymbols = new Set(inspectedSymbols);
+    nestedInspectedSymbols.add(resolvedSymbol);
+    return Boolean(
+      resolvedSymbol.declarations?.some(
+        (declaration) =>
+          ts.isVariableDeclaration(declaration) &&
+          declaration.initializer &&
+          isCallablePrototypeExpression(
+            declaration.initializer,
+            typeChecker,
+            nestedInspectedSymbols,
+          ),
+      ),
+    );
+  }
+
+  return (
+    ts.isCallExpression(unwrappedExpression) &&
+    isAmbientPrototypeReader(unwrappedExpression.expression, typeChecker) &&
+    Boolean(
+      unwrappedExpression.arguments[0] &&
+        isCallableRuntimeExpression(
+          unwrappedExpression.arguments[0],
+          typeChecker,
+        ),
+    )
+  );
+}
+
 /** Detects dynamic loaders and function constructors reached without a global name. */
 function isIntrinsicDynamicCapability(
   expression: ts.Expression,
@@ -280,8 +400,9 @@ function isIntrinsicDynamicCapability(
     accessedPropertyName === "constructor" &&
     (ts.isArrowFunction(constructorOwner) ||
       ts.isFunctionExpression(constructorOwner) ||
-      typeChecker.getTypeAtLocation(constructorOwner).getCallSignatures()
-        .length > 0)
+      ts.isClassExpression(constructorOwner) ||
+      isCallableRuntimeExpression(constructorOwner, typeChecker) ||
+      isCallablePrototypeExpression(constructorOwner, typeChecker))
   );
 }
 
@@ -766,6 +887,55 @@ describe("module dependency boundaries", () => {
       `const dynamicConstructor = (function domainFunction() {}).constructor;
        export { dynamicConstructor };`,
     ],
+    [
+      "class constructor property",
+      "application",
+      `const dynamicConstructor = (class DomainClass {}).constructor;
+       const runtimeProcess = dynamicConstructor("return process")();
+       export { runtimeProcess };`,
+    ],
+    [
+      "declared class constructor property",
+      "contracts",
+      `class DomainClass {}
+       const dynamicConstructor = DomainClass.constructor;
+       const runtimeProcess = dynamicConstructor("return process")();
+       export { runtimeProcess };`,
+    ],
+    [
+      "prototype-derived function constructor",
+      "execution",
+      `const functionPrototype = Object.getPrototypeOf(function domainFunction() {});
+       const dynamicConstructor = functionPrototype.constructor;
+       const runtimeProcess = dynamicConstructor("return process")();
+       export { runtimeProcess };`,
+    ],
+    [
+      "computed prototype-derived function constructor",
+      "application",
+      `const functionPrototype = Object["getPrototypeOf"](() => "domain-value");
+       const dynamicConstructor = functionPrototype["constructor"];
+       const runtimeProcess = dynamicConstructor("return process")();
+       export { runtimeProcess };`,
+    ],
+    [
+      "aliased prototype-derived class constructor",
+      "contracts",
+      `const readPrototype = Object.getPrototypeOf;
+       const secondPrototypeReader = readPrototype;
+       const classPrototype = secondPrototypeReader(class DomainClass {});
+       const dynamicConstructor = classPrototype.constructor;
+       const runtimeProcess = dynamicConstructor("return process")();
+       export { runtimeProcess };`,
+    ],
+    [
+      "Reflect-derived function constructor",
+      "execution",
+      `const functionPrototype = Reflect.getPrototypeOf(() => "domain-value")!;
+       const dynamicConstructor = functionPrototype.constructor;
+       const runtimeProcess = dynamicConstructor("return process")();
+       export { runtimeProcess };`,
+    ],
   ])(
     "rejects a compiling %s loader in %s",
     (_description, protectedModule, hostileSource) => {
@@ -810,6 +980,22 @@ describe("module dependency boundaries", () => {
       "require property",
       `const moduleMetadata = { require: (name: string) => name };
        const value = moduleMetadata.require("domain-module");
+       export { value };`,
+    ],
+    [
+      "Object.getPrototypeOf",
+      `const Object = {
+         getPrototypeOf: (_value: unknown) => ({ constructor: "domain-constructor" }),
+       };
+       const value = Object.getPrototypeOf(() => "domain-value").constructor;
+       export { value };`,
+    ],
+    [
+      "Reflect.getPrototypeOf",
+      `const Reflect = {
+         getPrototypeOf: (_value: unknown) => ({ constructor: "domain-constructor" }),
+       };
+       const value = Reflect.getPrototypeOf(() => "domain-value").constructor;
        export { value };`,
     ],
   ])("permits a compiling local %s shadow", (_description, sourceText) => {
