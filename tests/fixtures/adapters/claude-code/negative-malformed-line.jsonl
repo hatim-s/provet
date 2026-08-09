@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","apiKeySource":"temporary","claude_code_version":"2.1.226","cwd":"/workspace","tools":[],"mcp_servers":[],"model":"claude-fixture-model","permissionMode":"dontAsk","slash_commands":[],"output_style":"default","skills":[],"plugins":[],"uuid":"00000000-0000-4000-8000-000000000071","session_id":"00000000-0000-4000-8000-000000000070"}
+{"type":"assistant","message":
