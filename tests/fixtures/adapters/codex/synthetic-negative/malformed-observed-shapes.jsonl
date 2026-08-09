@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"[SANITIZED_THREAD_ID]"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution"}}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message"}}
+{"type":"turn.completed","usage":{}}

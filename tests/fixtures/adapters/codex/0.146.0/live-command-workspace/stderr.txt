@@ -1,0 +1,23 @@
+Reading additional input from stdin...
+[SANITIZED_TIMESTAMP] ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 94 column 5
+[SANITIZED_TIMESTAMP] ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit
+[SANITIZED_TIMESTAMP] ERROR codex_models_manager::manager: failed to refresh available models: timeout waiting for child process to exit
+[SANITIZED_TIMESTAMP] ERROR codex_models_manager::cache: failed to load models cache: missing field `base_instructions` at line 94 column 5
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
+[SANITIZED_TIMESTAMP] WARN codex_rollout::list: state db discrepancy during find_thread_path_by_id_str_in_subdir: falling_back
