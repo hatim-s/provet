@@ -137,6 +137,23 @@ describe("built vet discovery", () => {
     });
   });
 
+  test.each([
+    ["help stdout", '"$1" --help >/dev/null', 0],
+    ["version stdout", '"$1" --version >/dev/null', 0],
+    ["usage stderr", '"$1" --bogus 2>/dev/null', 2],
+  ])(
+    "preserves the %s exit when redirected to /dev/null",
+    async (_description, shellScript, expectedExitCode) => {
+      const execution = await executeShellProbe(shellScript, [BUILT_VET_PATH]);
+
+      expect(execution).toEqual({
+        exitCode: expectedExitCode,
+        standardError: "",
+        standardOutput: "",
+      });
+    },
+  );
+
   test("maps an early-closing stdout pipe to a stack-free internal error", async () => {
     const temporaryDirectory = await mkdtemp(join(tmpdir(), "provet-e2e-"));
 

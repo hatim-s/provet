@@ -43,5 +43,9 @@ source import.
 - The implementation may rely on POSIX path, permission, process, and signal
   semantics. Git must be available when a later command requests repository
   provenance.
+- Bun 1.3 replaces a standard descriptor inherited closed with a read-write
+  `/dev/null` descriptor. The terminal adapter distinguishes normal write-only
+  `/dev/null` redirection from that replacement; an explicitly read-write
+  `/dev/null` redirection is indistinguishable and is treated as unavailable.
 - Native Windows is not supported in v1 until process, signal, filesystem, and
   terminal behavior receive explicit compatibility evidence.
