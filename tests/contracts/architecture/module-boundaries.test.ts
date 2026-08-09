@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { builtinModules } from "node:module";
 import { dirname, relative, resolve, sep } from "node:path";
 import ts from "typescript";
@@ -10,6 +10,7 @@ import moduleBoundaryConfiguration from "../../../architecture/module-boundaries
 
 const REPOSITORY_ROOT = resolve(import.meta.dir, "../../..");
 const SOURCE_ROOT = resolve(REPOSITORY_ROOT, "src");
+const TYPESCRIPT_CONFIGURATION_PATH = resolve(REPOSITORY_ROOT, "tsconfig.json");
 const HOST_MODULE_SPECIFIERS = new Set([
   "bun",
   "bun:ffi",
@@ -20,6 +21,13 @@ const HOST_MODULE_SPECIFIERS = new Set([
   ...builtinModules.map((moduleName) => `node:${moduleName}`),
 ]);
 const HOST_FREE_MODULES = new Set(["application", "contracts", "execution"]);
+const HOST_GLOBAL_NAMES = new Set([
+  "Bun",
+  "global",
+  "globalThis",
+  "process",
+  "require",
+]);
 
 interface SourceDependencyObservation {
   hostBoundaryViolations: readonly string[];
@@ -90,13 +98,225 @@ function resolveImportedModule(
     : null;
 }
 
-/** Reports whether an identifier is a runtime reference rather than a declaration name. */
+/** Loads the repository compiler settings used by compiling boundary probes. */
+function readCompilerConfiguration(): ts.ParsedCommandLine {
+  const configurationResult = ts.readConfigFile(
+    TYPESCRIPT_CONFIGURATION_PATH,
+    ts.sys.readFile,
+  );
+  if (configurationResult.error) {
+    throw new Error(
+      ts.flattenDiagnosticMessageText(
+        configurationResult.error.messageText,
+        "\n",
+      ),
+    );
+  }
+
+  return ts.parseJsonConfigFileContent(
+    configurationResult.config,
+    ts.sys,
+    REPOSITORY_ROOT,
+  );
+}
+
+/** Builds a checker-backed program and optionally overlays one hostile source file. */
+function createBoundaryProgram(hostileSource?: {
+  readonly compilerOptions?: ts.CompilerOptions;
+  readonly sourcePath: string;
+  readonly sourceText: string;
+}): ts.Program {
+  const compilerConfiguration = readCompilerConfiguration();
+  const compilerOptions = {
+    ...compilerConfiguration.options,
+    ...hostileSource?.compilerOptions,
+  };
+  if (!hostileSource) {
+    return ts.createProgram({
+      options: compilerOptions,
+      rootNames: compilerConfiguration.fileNames,
+    });
+  }
+
+  const normalizedHostilePath = resolve(hostileSource.sourcePath);
+  const compilerHost = ts.createCompilerHost(compilerOptions, true);
+  const readDefaultSourceFile = compilerHost.getSourceFile.bind(compilerHost);
+  compilerHost.fileExists = (sourcePath) =>
+    resolve(sourcePath) === normalizedHostilePath ||
+    ts.sys.fileExists(sourcePath);
+  compilerHost.readFile = (sourcePath) =>
+    resolve(sourcePath) === normalizedHostilePath
+      ? hostileSource.sourceText
+      : ts.sys.readFile(sourcePath);
+  compilerHost.getSourceFile = (
+    sourcePath,
+    languageVersion,
+    onError,
+    shouldCreateNewSourceFile,
+  ) =>
+    resolve(sourcePath) === normalizedHostilePath
+      ? ts.createSourceFile(
+          sourcePath,
+          hostileSource.sourceText,
+          languageVersion,
+          true,
+          ts.ScriptKind.TS,
+        )
+      : readDefaultSourceFile(
+          sourcePath,
+          languageVersion,
+          onError,
+          shouldCreateNewSourceFile,
+        );
+
+  return ts.createProgram({
+    host: compilerHost,
+    options: compilerOptions,
+    rootNames: [normalizedHostilePath],
+  });
+}
+
+/** Resolves a symbol through an import alias without losing local declarations. */
+function readResolvedSymbol(
+  symbol: ts.Symbol,
+  typeChecker: ts.TypeChecker,
+): ts.Symbol {
+  return symbol.flags & ts.SymbolFlags.Alias
+    ? typeChecker.getAliasedSymbol(symbol)
+    : symbol;
+}
+
+/** Reports whether an identifier refers to an ambient host global, not local shadowing. */
+function isAmbientHostIdentifier(
+  identifier: ts.Identifier,
+  typeChecker: ts.TypeChecker,
+): boolean {
+  if (!HOST_GLOBAL_NAMES.has(identifier.text)) {
+    return false;
+  }
+
+  const symbol = typeChecker.getSymbolAtLocation(identifier);
+  return (
+    !symbol ||
+    !symbol.declarations?.some((declaration) =>
+      resolve(declaration.getSourceFile().fileName).startsWith(
+        `${SOURCE_ROOT}${sep}`,
+      ),
+    )
+  );
+}
+
+/** Reads every bound symbol from an identifier or destructuring pattern. */
+function readBindingSymbols(
+  bindingName: ts.BindingName,
+  typeChecker: ts.TypeChecker,
+): readonly ts.Symbol[] {
+  if (ts.isIdentifier(bindingName)) {
+    const symbol = typeChecker.getSymbolAtLocation(bindingName);
+    return symbol ? [readResolvedSymbol(symbol, typeChecker)] : [];
+  }
+
+  return bindingName.elements.flatMap((bindingElement) =>
+    ts.isOmittedExpression(bindingElement)
+      ? []
+      : readBindingSymbols(bindingElement.name, typeChecker),
+  );
+}
+
+/** Reports whether an expression exposes a host capability directly or through aliases. */
+function doesExpressionExposeHost(
+  expression: ts.Expression,
+  typeChecker: ts.TypeChecker,
+  hostCapabilitySymbols: ReadonlySet<ts.Symbol>,
+): boolean {
+  if (ts.isIdentifier(expression)) {
+    const symbol = typeChecker.getSymbolAtLocation(expression);
+    return (
+      isAmbientHostIdentifier(expression, typeChecker) ||
+      Boolean(
+        symbol &&
+          hostCapabilitySymbols.has(readResolvedSymbol(symbol, typeChecker)),
+      )
+    );
+  }
+  if (
+    ts.isPropertyAccessExpression(expression) ||
+    ts.isElementAccessExpression(expression)
+  ) {
+    return doesExpressionExposeHost(
+      expression.expression,
+      typeChecker,
+      hostCapabilitySymbols,
+    );
+  }
+  if (
+    ts.isAsExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isParenthesizedExpression(expression) ||
+    ts.isSatisfiesExpression(expression) ||
+    ts.isTypeAssertionExpression(expression)
+  ) {
+    return doesExpressionExposeHost(
+      expression.expression,
+      typeChecker,
+      hostCapabilitySymbols,
+    );
+  }
+
+  return false;
+}
+
+/** Propagates ambient host capability through variable aliases to a fixed point. */
+function readHostCapabilitySymbols(
+  sourceFile: ts.SourceFile,
+  typeChecker: ts.TypeChecker,
+): ReadonlySet<ts.Symbol> {
+  const hostCapabilitySymbols = new Set<ts.Symbol>();
+  let hasAddedCapability = true;
+
+  while (hasAddedCapability) {
+    hasAddedCapability = false;
+
+    /** Taints bindings whose initializer already exposes a host capability. */
+    const inspectAlias = (node: ts.Node): void => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.initializer &&
+        doesExpressionExposeHost(
+          node.initializer,
+          typeChecker,
+          hostCapabilitySymbols,
+        )
+      ) {
+        for (const bindingSymbol of readBindingSymbols(
+          node.name,
+          typeChecker,
+        )) {
+          if (!hostCapabilitySymbols.has(bindingSymbol)) {
+            hostCapabilitySymbols.add(bindingSymbol);
+            hasAddedCapability = true;
+          }
+        }
+      }
+
+      ts.forEachChild(node, inspectAlias);
+    };
+    inspectAlias(sourceFile);
+  }
+
+  return hostCapabilitySymbols;
+}
+
+/** Reports whether an identifier is a reference rather than a declaration/property name. */
 function isRuntimeIdentifierReference(identifier: ts.Identifier): boolean {
   const parentNode = identifier.parent;
   if (
     (ts.isPropertyAccessExpression(parentNode) &&
       parentNode.name === identifier) ||
-    ("name" in parentNode && parentNode.name === identifier)
+    (ts.isPropertyAssignment(parentNode) && parentNode.name === identifier) ||
+    (ts.isPropertySignature(parentNode) && parentNode.name === identifier) ||
+    (ts.isBindingElement(parentNode) && parentNode.name === identifier) ||
+    (ts.isVariableDeclaration(parentNode) && parentNode.name === identifier)
   ) {
     return false;
   }
@@ -106,20 +326,18 @@ function isRuntimeIdentifierReference(identifier: ts.Identifier): boolean {
   );
 }
 
-/** Reads internal dependencies and forbidden host-runtime access from source text. */
+/** Reads internal dependencies and checker-resolved host capability access. */
 function inspectSourceDependencies(
-  sourcePath: string,
-  sourceText: string,
+  sourceFile: ts.SourceFile,
+  typeChecker: ts.TypeChecker,
 ): SourceDependencyObservation {
-  const sourceFile = ts.createSourceFile(
-    sourcePath,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
+  const sourcePath = sourceFile.fileName;
   const importedModules: string[] = [];
   const hostBoundaryViolations: string[] = [];
+  const hostCapabilitySymbols = readHostCapabilitySymbols(
+    sourceFile,
+    typeChecker,
+  );
 
   /** Records one static module specifier at both the module and host boundaries. */
   const inspectModuleSpecifier = (moduleSpecifier: ts.Expression): void => {
@@ -147,70 +365,46 @@ function inspectSourceDependencies(
       ts.isStringLiteral(statement.moduleSpecifier)
     ) {
       inspectModuleSpecifier(statement.moduleSpecifier);
+    } else if (
+      ts.isImportEqualsDeclaration(statement) &&
+      ts.isExternalModuleReference(statement.moduleReference) &&
+      statement.moduleReference.expression
+    ) {
+      inspectModuleSpecifier(statement.moduleReference.expression);
     }
   }
 
-  /** Finds dynamic loading and host globals that top-level import checks miss. */
+  /** Finds dynamic loading and checker-resolved host aliases. */
   const inspectNode = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         hostBoundaryViolations.push("dynamic import");
       } else if (
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === "require"
+        doesExpressionExposeHost(
+          node.expression,
+          typeChecker,
+          hostCapabilitySymbols,
+        )
       ) {
-        hostBoundaryViolations.push("CommonJS require");
+        hostBoundaryViolations.push("host capability call");
       }
     }
 
     if (
-      ts.isVariableDeclaration(node) &&
-      ts.isObjectBindingPattern(node.name) &&
-      node.initializer &&
-      ts.isIdentifier(node.initializer) &&
-      (node.initializer.text === "global" ||
-        node.initializer.text === "globalThis")
-    ) {
-      for (const bindingElement of node.name.elements) {
-        const hostGlobalName =
-          bindingElement.propertyName ?? bindingElement.name;
-        if (
-          ts.isIdentifier(hostGlobalName) &&
-          (hostGlobalName.text === "Bun" || hostGlobalName.text === "process")
-        ) {
-          hostBoundaryViolations.push(
-            `destructured host global ${hostGlobalName.text}`,
-          );
-        }
-      }
-    }
-
-    if (
-      ts.isPropertyAccessExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      (node.expression.text === "global" ||
-        node.expression.text === "globalThis") &&
-      (node.name.text === "Bun" || node.name.text === "process")
-    ) {
-      hostBoundaryViolations.push(`host global globalThis.${node.name.text}`);
-    } else if (
-      ts.isElementAccessExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      (node.expression.text === "global" ||
-        node.expression.text === "globalThis") &&
-      ts.isStringLiteral(node.argumentExpression) &&
-      (node.argumentExpression.text === "Bun" ||
-        node.argumentExpression.text === "process")
-    ) {
-      hostBoundaryViolations.push(
-        `host global globalThis[${node.argumentExpression.text}]`,
-      );
-    } else if (
       ts.isIdentifier(node) &&
-      (node.text === "Bun" || node.text === "process") &&
-      isRuntimeIdentifierReference(node)
+      isRuntimeIdentifierReference(node) &&
+      (isAmbientHostIdentifier(node, typeChecker) ||
+        Boolean(
+          typeChecker.getSymbolAtLocation(node) &&
+            hostCapabilitySymbols.has(
+              readResolvedSymbol(
+                typeChecker.getSymbolAtLocation(node) as ts.Symbol,
+                typeChecker,
+              ),
+            ),
+        ))
     ) {
-      hostBoundaryViolations.push(`host global ${node.text}`);
+      hostBoundaryViolations.push(`host capability ${node.text}`);
     }
 
     ts.forEachChild(node, inspectNode);
@@ -220,14 +414,17 @@ function inspectSourceDependencies(
   return { hostBoundaryViolations, importedModules };
 }
 
-/** Reads one real source file through the same hostile-inspection path. */
-async function inspectSourceFile(
+/** Reads one real source file through the checker-backed inspection path. */
+function inspectSourceFile(
+  program: ts.Program,
   sourcePath: string,
-): Promise<SourceDependencyObservation> {
-  return inspectSourceDependencies(
-    sourcePath,
-    await readFile(sourcePath, "utf8"),
-  );
+): SourceDependencyObservation {
+  const sourceFile = program.getSourceFile(sourcePath);
+  if (!sourceFile) {
+    throw new Error(`TypeScript did not load ${sourcePath}.`);
+  }
+
+  return inspectSourceDependencies(sourceFile, program.getTypeChecker());
 }
 
 describe("module dependency boundaries", () => {
@@ -247,6 +444,7 @@ describe("module dependency boundaries", () => {
 
   test("all internal imports follow the configured inward direction", async () => {
     const sourcePaths = await listTypeScriptFiles(SOURCE_ROOT);
+    const repositoryProgram = createBoundaryProgram();
     const moduleRules = moduleBoundaryConfiguration.modules as Readonly<
       Record<string, readonly string[]>
     >;
@@ -259,7 +457,10 @@ describe("module dependency boundaries", () => {
         `Missing boundary rule for ${sourceModule}.`,
       ).toBeDefined();
 
-      const dependencyObservation = await inspectSourceFile(sourcePath);
+      const dependencyObservation = inspectSourceFile(
+        repositoryProgram,
+        sourcePath,
+      );
       for (const importedModule of dependencyObservation.importedModules) {
         expect(
           allowedImports,
@@ -300,6 +501,7 @@ describe("module dependency boundaries", () => {
   );
 
   test("application, contracts, and execution reject host runtime access", async () => {
+    const repositoryProgram = createBoundaryProgram();
     const protectedSourcePaths = (
       await listTypeScriptFiles(SOURCE_ROOT)
     ).filter((sourcePath) =>
@@ -308,7 +510,8 @@ describe("module dependency boundaries", () => {
 
     for (const protectedSourcePath of protectedSourcePaths) {
       expect(
-        (await inspectSourceFile(protectedSourcePath)).hostBoundaryViolations,
+        inspectSourceFile(repositoryProgram, protectedSourcePath)
+          .hostBoundaryViolations,
         `${relative(REPOSITORY_ROOT, protectedSourcePath)} crosses the host boundary.`,
       ).toEqual([]);
     }
@@ -336,11 +539,126 @@ describe("module dependency boundaries", () => {
     ],
     ["host global type query", "type Runtime = typeof Bun;"],
   ])("rejects a hostile %s bypass", (_description, hostileSource) => {
+    const hostileSourcePath = resolve(
+      SOURCE_ROOT,
+      "application/hostile-boundary-probe.ts",
+    );
+    const hostileProgram = createBoundaryProgram({
+      sourcePath: hostileSourcePath,
+      sourceText: hostileSource,
+    });
+
     expect(
-      inspectSourceDependencies(
-        resolve(SOURCE_ROOT, "application/hostile-boundary-probe.ts"),
-        hostileSource,
-      ).hostBoundaryViolations,
+      inspectSourceFile(hostileProgram, hostileSourcePath)
+        .hostBoundaryViolations,
     ).not.toEqual([]);
+  });
+
+  test.each([
+    [
+      "globalThis alias",
+      "application",
+      `const hostRuntime = globalThis;
+       const runtimeVersion = hostRuntime.process.version;
+       export { runtimeVersion };`,
+    ],
+    [
+      "require alias",
+      "contracts",
+      `const loadHostModule = require;
+       const fileSystem = loadHostModule("node:fs");
+       export { fileSystem };`,
+    ],
+    [
+      "multi-hop destructured process alias",
+      "execution",
+      `const firstHostRuntime = globalThis;
+       const secondHostRuntime = firstHostRuntime;
+       const { process: runtimeProcess } = secondHostRuntime;
+       const runtimeVersion = runtimeProcess.version;
+       export { runtimeVersion };`,
+    ],
+    [
+      "global alias",
+      "application",
+      `const hostRuntime = global;
+       const runtimeVersion = hostRuntime.process.version;
+       export { runtimeVersion };`,
+    ],
+    [
+      "process alias",
+      "contracts",
+      `const runtimeProcess = process;
+       const runtimeVersion = runtimeProcess.version;
+       export { runtimeVersion };`,
+    ],
+    [
+      "Bun alias",
+      "execution",
+      `const bunRuntime = Bun;
+       const runtimeVersion = bunRuntime.version;
+       export { runtimeVersion };`,
+    ],
+  ])(
+    "rejects a compiling %s in %s",
+    (_description, protectedModule, hostileSource) => {
+      const hostileSourcePath = resolve(
+        SOURCE_ROOT,
+        protectedModule,
+        "host-alias-boundary-probe.ts",
+      );
+      const hostileProgram = createBoundaryProgram({
+        sourcePath: hostileSourcePath,
+        sourceText: hostileSource,
+      });
+
+      expect(ts.getPreEmitDiagnostics(hostileProgram)).toEqual([]);
+      expect(
+        inspectSourceFile(hostileProgram, hostileSourcePath)
+          .hostBoundaryViolations,
+      ).not.toEqual([]);
+    },
+  );
+
+  test("rejects a compiling import-equals host module", () => {
+    const hostileSourcePath = resolve(
+      SOURCE_ROOT,
+      "execution/import-equals-boundary-probe.ts",
+    );
+    const hostileProgram = createBoundaryProgram({
+      compilerOptions: {
+        module: ts.ModuleKind.CommonJS,
+        moduleResolution: ts.ModuleResolutionKind.Node10,
+        verbatimModuleSyntax: false,
+      },
+      sourcePath: hostileSourcePath,
+      sourceText: `import fileSystem = require("node:fs");
+        const runtimeVersion = fileSystem.constants.COPYFILE_EXCL;
+        export { runtimeVersion };`,
+    });
+
+    expect(ts.getPreEmitDiagnostics(hostileProgram)).toEqual([]);
+    expect(
+      inspectSourceFile(hostileProgram, hostileSourcePath)
+        .hostBoundaryViolations,
+    ).not.toEqual([]);
+  });
+
+  test("permits local names that shadow host globals without exposing them", () => {
+    const sourcePath = resolve(
+      SOURCE_ROOT,
+      "application/local-process-port.ts",
+    );
+    const sourceProgram = createBoundaryProgram({
+      sourcePath,
+      sourceText: `const process = { version: "domain-version" };
+        const runtimeVersion = process.version;
+        export { runtimeVersion };`,
+    });
+
+    expect(ts.getPreEmitDiagnostics(sourceProgram)).toEqual([]);
+    expect(
+      inspectSourceFile(sourceProgram, sourcePath).hostBoundaryViolations,
+    ).toEqual([]);
   });
 });

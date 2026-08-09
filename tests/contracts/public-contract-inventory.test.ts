@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
-import { relative, resolve } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import ts from "typescript";
 
 import type { AdapterConfiguration } from "../../src/contracts/invocation/adapter-configuration.js";
@@ -13,6 +13,7 @@ const REPOSITORY_ROOT = resolve(import.meta.dir, "../..");
 const SOURCE_ROOT = resolve(REPOSITORY_ROOT, "src");
 const CONTRACT_ROOT = resolve(SOURCE_ROOT, "contracts");
 const INVENTORY_SOURCE_PATH = "src/contracts/public-contract-inventory.ts";
+const TYPESCRIPT_CONFIGURATION_PATH = resolve(REPOSITORY_ROOT, "tsconfig.json");
 
 /** Recursively lists TypeScript files in stable path order. */
 async function listTypeScriptFiles(
@@ -104,87 +105,323 @@ async function readDeclaredNames(
   return declarationNames;
 }
 
-interface StructuralDeclaration {
+interface SemanticStructuralDeclaration {
+  declaration: ts.InterfaceDeclaration | ts.TypeAliasDeclaration;
   name: string;
   signature: string;
 }
 
-/** Canonicalizes one member so property order and formatting cannot hide a copy. */
-function readMemberSignature(
-  member: ts.TypeElement,
-  sourceFile: ts.SourceFile,
-): string {
-  if (ts.isPropertySignature(member)) {
-    const isReadonly = member.modifiers?.some(
-      (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
-    );
-    return [
-      "property",
-      isReadonly ? "readonly" : "mutable",
-      member.name.getText(sourceFile),
-      member.questionToken ? "optional" : "required",
-      member.type ? readTypeSignature(member.type, sourceFile) : "unknown",
-    ].join(":");
-  }
-
-  return member.getText(sourceFile).replace(/\s+/gu, "");
+interface OwnedSemanticSignature {
+  ownerPath: string;
+  ownerType: ts.Type;
+  symbolName: string;
 }
 
-/** Canonicalizes structural type syntax while preserving referenced owner names. */
-function readTypeSignature(
-  typeNode: ts.TypeNode,
-  sourceFile: ts.SourceFile,
-): string {
-  if (ts.isTypeLiteralNode(typeNode)) {
-    return `{${typeNode.members
-      .map((member) => readMemberSignature(member, sourceFile))
-      .sort()
-      .join(";")}}`;
+/** Loads the repository compiler settings used by semantic inventory checks. */
+function readCompilerConfiguration(): ts.ParsedCommandLine {
+  const configurationResult = ts.readConfigFile(
+    TYPESCRIPT_CONFIGURATION_PATH,
+    ts.sys.readFile,
+  );
+  if (configurationResult.error) {
+    throw new Error(
+      ts.flattenDiagnosticMessageText(
+        configurationResult.error.messageText,
+        "\n",
+      ),
+    );
   }
-  if (ts.isUnionTypeNode(typeNode) || ts.isIntersectionTypeNode(typeNode)) {
-    const operator = ts.isUnionTypeNode(typeNode) ? "union" : "intersection";
-    return `${operator}(${typeNode.types
-      .map((memberType) => readTypeSignature(memberType, sourceFile))
+
+  return ts.parseJsonConfigFileContent(
+    configurationResult.config,
+    ts.sys,
+    REPOSITORY_ROOT,
+  );
+}
+
+/** Builds a semantic program and optionally overlays one compiling probe. */
+function createSemanticProgram(
+  rootSourcePaths: readonly string[],
+  additionalSource?: {
+    readonly sourcePath: string;
+    readonly sourceText: string;
+  },
+): ts.Program {
+  const compilerConfiguration = readCompilerConfiguration();
+  if (!additionalSource) {
+    return ts.createProgram({
+      options: compilerConfiguration.options,
+      rootNames: [...rootSourcePaths],
+    });
+  }
+
+  const normalizedAdditionalPath = resolve(additionalSource.sourcePath);
+  const compilerHost = ts.createCompilerHost(
+    compilerConfiguration.options,
+    true,
+  );
+  const readDefaultSourceFile = compilerHost.getSourceFile.bind(compilerHost);
+  compilerHost.fileExists = (sourcePath) =>
+    resolve(sourcePath) === normalizedAdditionalPath ||
+    ts.sys.fileExists(sourcePath);
+  compilerHost.readFile = (sourcePath) =>
+    resolve(sourcePath) === normalizedAdditionalPath
+      ? additionalSource.sourceText
+      : ts.sys.readFile(sourcePath);
+  compilerHost.getSourceFile = (
+    sourcePath,
+    languageVersion,
+    onError,
+    shouldCreateNewSourceFile,
+  ) =>
+    resolve(sourcePath) === normalizedAdditionalPath
+      ? ts.createSourceFile(
+          sourcePath,
+          additionalSource.sourceText,
+          languageVersion,
+          true,
+          ts.ScriptKind.TS,
+        )
+      : readDefaultSourceFile(
+          sourcePath,
+          languageVersion,
+          onError,
+          shouldCreateNewSourceFile,
+        );
+
+  return ts.createProgram({
+    host: compilerHost,
+    options: compilerConfiguration.options,
+    rootNames: [...rootSourcePaths, normalizedAdditionalPath],
+  });
+}
+
+/** Reports whether a property is readonly in its semantic declaration. */
+function isReadonlyProperty(propertySymbol: ts.Symbol): boolean {
+  return Boolean(
+    propertySymbol.declarations?.some(
+      (declaration) =>
+        ts.canHaveModifiers(declaration) &&
+        ts
+          .getModifiers(declaration)
+          ?.some((modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword),
+    ),
+  );
+}
+
+/** Canonicalizes a function signature using checker-resolved parameter types. */
+function readCallSignature(
+  callSignature: ts.Signature,
+  typeChecker: ts.TypeChecker,
+  activeTypes: ReadonlySet<ts.Type>,
+): string {
+  const declaration = callSignature.getDeclaration();
+  const parameters = callSignature.getParameters().map((parameter) => {
+    const parameterDeclaration = parameter.valueDeclaration ?? declaration;
+    const parameterType = typeChecker.getTypeOfSymbolAtLocation(
+      parameter,
+      parameterDeclaration,
+    );
+    return `${parameter.flags & ts.SymbolFlags.Optional ? "optional" : "required"}:${readSemanticTypeSignature(
+      parameterType,
+      parameterDeclaration,
+      typeChecker,
+      activeTypes,
+    )}`;
+  });
+  const returnType = typeChecker.getReturnTypeOfSignature(callSignature);
+  return `call(${parameters.join(",")})->${readSemanticTypeSignature(
+    returnType,
+    declaration,
+    typeChecker,
+    activeTypes,
+  )}`;
+}
+
+/** Canonicalizes checker-resolved type semantics, including intersections and heritage. */
+function readSemanticTypeSignature(
+  semanticType: ts.Type,
+  location: ts.Node,
+  typeChecker: ts.TypeChecker,
+  activeTypes: ReadonlySet<ts.Type> = new Set(),
+): string {
+  if (activeTypes.has(semanticType)) {
+    return "recursive";
+  }
+
+  const nestedActiveTypes = new Set(activeTypes);
+  nestedActiveTypes.add(semanticType);
+
+  if (semanticType.isUnion()) {
+    return `union(${semanticType.types
+      .map((memberType) =>
+        readSemanticTypeSignature(
+          memberType,
+          location,
+          typeChecker,
+          nestedActiveTypes,
+        ),
+      )
       .sort()
       .join(",")})`;
   }
-  if (ts.isParenthesizedTypeNode(typeNode)) {
-    return readTypeSignature(typeNode.type, sourceFile);
+  if (semanticType.flags & ts.TypeFlags.StringLiteral) {
+    return `string-literal(${JSON.stringify((semanticType as ts.StringLiteralType).value)})`;
   }
-  if (ts.isArrayTypeNode(typeNode)) {
-    return `array(${readTypeSignature(typeNode.elementType, sourceFile)})`;
+  if (semanticType.flags & ts.TypeFlags.NumberLiteral) {
+    return `number-literal(${(semanticType as ts.NumberLiteralType).value})`;
   }
 
-  return typeNode.getText(sourceFile).replace(/\s+/gu, "");
+  const primitiveSignatures: readonly [ts.TypeFlags, string][] = [
+    [ts.TypeFlags.Any, "any"],
+    [ts.TypeFlags.Unknown, "unknown"],
+    [ts.TypeFlags.Never, "never"],
+    [ts.TypeFlags.Null, "null"],
+    [ts.TypeFlags.Undefined, "undefined"],
+    [ts.TypeFlags.Boolean, "boolean"],
+    [ts.TypeFlags.Number, "number"],
+    [ts.TypeFlags.String, "string"],
+    [ts.TypeFlags.BigInt, "bigint"],
+  ];
+  const primitiveSignature = primitiveSignatures.find(
+    ([typeFlag]) => semanticType.flags & typeFlag,
+  );
+  if (primitiveSignature) {
+    return primitiveSignature[1];
+  }
+
+  if (typeChecker.isTupleType(semanticType)) {
+    return `tuple(${typeChecker
+      .getTypeArguments(semanticType as ts.TypeReference)
+      .map((elementType) =>
+        readSemanticTypeSignature(
+          elementType,
+          location,
+          typeChecker,
+          nestedActiveTypes,
+        ),
+      )
+      .join(",")})`;
+  }
+  if (typeChecker.isArrayType(semanticType)) {
+    const [elementType] = typeChecker.getTypeArguments(
+      semanticType as ts.TypeReference,
+    );
+    return `array(${elementType ? readSemanticTypeSignature(elementType, location, typeChecker, nestedActiveTypes) : "unknown"})`;
+  }
+
+  const semanticSymbol = semanticType.aliasSymbol ?? semanticType.symbol;
+  const isExternalReference = Boolean(
+    semanticSymbol?.declarations?.every(
+      (declaration) =>
+        !resolve(declaration.getSourceFile().fileName).startsWith(
+          `${SOURCE_ROOT}${sep}`,
+        ),
+    ),
+  );
+  if (semanticSymbol && isExternalReference) {
+    const typeArguments =
+      semanticType.flags & ts.TypeFlags.Object
+        ? typeChecker.getTypeArguments(semanticType as ts.TypeReference)
+        : [];
+    return `external(${semanticSymbol.getName()}${typeArguments
+      .map(
+        (typeArgument) =>
+          `:${readSemanticTypeSignature(
+            typeArgument,
+            location,
+            typeChecker,
+            nestedActiveTypes,
+          )}`,
+      )
+      .join("")})`;
+  }
+
+  const properties = typeChecker.getPropertiesOfType(semanticType);
+  const propertySignatures = properties.map((property) => {
+    const propertyLocation = property.valueDeclaration ?? location;
+    const propertyType = typeChecker.getTypeOfSymbolAtLocation(
+      property,
+      propertyLocation,
+    );
+    return [
+      property.getName(),
+      isReadonlyProperty(property) ? "readonly" : "mutable",
+      property.flags & ts.SymbolFlags.Optional ? "optional" : "required",
+      readSemanticTypeSignature(
+        propertyType,
+        propertyLocation,
+        typeChecker,
+        nestedActiveTypes,
+      ),
+    ].join(":");
+  });
+  const callSignatures = semanticType
+    .getCallSignatures()
+    .map((callSignature) =>
+      readCallSignature(callSignature, typeChecker, nestedActiveTypes),
+    );
+  const stringIndexType = typeChecker.getIndexTypeOfType(
+    semanticType,
+    ts.IndexKind.String,
+  );
+  const numberIndexType = typeChecker.getIndexTypeOfType(
+    semanticType,
+    ts.IndexKind.Number,
+  );
+  return `object(${[
+    ...propertySignatures,
+    ...callSignatures,
+    ...(stringIndexType
+      ? [
+          `string-index:${readSemanticTypeSignature(
+            stringIndexType,
+            location,
+            typeChecker,
+            nestedActiveTypes,
+          )}`,
+        ]
+      : []),
+    ...(numberIndexType
+      ? [
+          `number-index:${readSemanticTypeSignature(
+            numberIndexType,
+            location,
+            typeChecker,
+            nestedActiveTypes,
+          )}`,
+        ]
+      : []),
+  ]
+    .sort()
+    .join(";")})`;
 }
 
-/** Reads canonical signatures for top-level DTO interfaces and type aliases. */
-function readStructuralDeclarations(
+/** Reads semantic signatures for top-level DTO interfaces and type aliases. */
+function readSemanticStructuralDeclarations(
+  program: ts.Program,
   sourcePath: string,
-  sourceText: string,
-): readonly StructuralDeclaration[] {
-  const sourceFile = ts.createSourceFile(
-    sourcePath,
-    sourceText,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
-  const structuralDeclarations: StructuralDeclaration[] = [];
+): readonly SemanticStructuralDeclaration[] {
+  const sourceFile = program.getSourceFile(sourcePath);
+  if (!sourceFile) {
+    throw new Error(`TypeScript did not load ${sourcePath}.`);
+  }
+  const typeChecker = program.getTypeChecker();
+  const structuralDeclarations: SemanticStructuralDeclaration[] = [];
 
   for (const statement of sourceFile.statements) {
-    if (ts.isInterfaceDeclaration(statement)) {
+    if (
+      ts.isInterfaceDeclaration(statement) ||
+      ts.isTypeAliasDeclaration(statement)
+    ) {
       structuralDeclarations.push({
+        declaration: statement,
         name: statement.name.text,
-        signature: `interface(${statement.members
-          .map((member) => readMemberSignature(member, sourceFile))
-          .sort()
-          .join(";")})`,
-      });
-    } else if (ts.isTypeAliasDeclaration(statement)) {
-      structuralDeclarations.push({
-        name: statement.name.text,
-        signature: `type(${readTypeSignature(statement.type, sourceFile)})`,
+        signature: readSemanticTypeSignature(
+          typeChecker.getTypeAtLocation(statement),
+          statement,
+          typeChecker,
+        ),
       });
     }
   }
@@ -192,23 +429,18 @@ function readStructuralDeclarations(
   return structuralDeclarations;
 }
 
-/** Loads the structural signatures that only their inventoried owner may declare. */
-async function readOwnedStructuralSignatures(): Promise<
-  ReadonlyMap<
-    string,
-    { readonly ownerPath: string; readonly symbolName: string }
-  >
-> {
-  const ownedSignatures = new Map<
-    string,
-    { readonly ownerPath: string; readonly symbolName: string }
-  >();
+/** Loads semantic signatures that only their inventoried owner may declare. */
+function readOwnedSemanticSignatures(
+  program: ts.Program,
+): ReadonlyMap<string, OwnedSemanticSignature> {
+  const ownedSignatures = new Map<string, OwnedSemanticSignature>();
+  const typeChecker = program.getTypeChecker();
 
   for (const contractEntry of PUBLIC_CONTRACT_INVENTORY) {
     const ownerSourcePath = resolve(REPOSITORY_ROOT, contractEntry.sourcePath);
-    const structuralDeclarations = readStructuralDeclarations(
+    const structuralDeclarations = readSemanticStructuralDeclarations(
+      program,
       ownerSourcePath,
-      await readFile(ownerSourcePath, "utf8"),
     );
     for (const structuralDeclaration of structuralDeclarations) {
       if (
@@ -225,12 +457,52 @@ async function readOwnedStructuralSignatures(): Promise<
       ).toBe(false);
       ownedSignatures.set(structuralDeclaration.signature, {
         ownerPath: contractEntry.sourcePath,
+        ownerType: typeChecker.getTypeAtLocation(
+          structuralDeclaration.declaration,
+        ),
         symbolName: structuralDeclaration.name,
       });
     }
   }
 
   return ownedSignatures;
+}
+
+/** Reports whether a declaration genuinely reuses the matched owner type. */
+function doesDeclarationReuseOwner(
+  structuralDeclaration: SemanticStructuralDeclaration,
+  ownedSignature: OwnedSemanticSignature,
+  typeChecker: ts.TypeChecker,
+): boolean {
+  let doesReuseOwner = false;
+
+  /** Finds a referenced type whose checker-resolved semantics equal the owner. */
+  const inspectReference = (node: ts.Node): void => {
+    if (
+      (ts.isTypeReferenceNode(node) ||
+        ts.isExpressionWithTypeArguments(node)) &&
+      readSemanticTypeSignature(
+        typeChecker.getTypeAtLocation(node),
+        node,
+        typeChecker,
+      ) === structuralDeclaration.signature
+    ) {
+      doesReuseOwner = true;
+      return;
+    }
+
+    ts.forEachChild(node, inspectReference);
+  };
+  inspectReference(structuralDeclaration.declaration);
+
+  return (
+    doesReuseOwner &&
+    readSemanticTypeSignature(
+      ownedSignature.ownerType,
+      structuralDeclaration.declaration,
+      typeChecker,
+    ) === structuralDeclaration.signature
+  );
 }
 
 /** Forces an exhaustive compile-time decision for the closed adapter union. */
@@ -352,18 +624,28 @@ describe("public contract inventory", () => {
   });
 
   test("prohibits renamed structural copies of inventoried DTOs", async () => {
-    const ownedSignatures = await readOwnedStructuralSignatures();
+    const sourcePaths = await listTypeScriptFiles(SOURCE_ROOT);
+    const semanticProgram = createSemanticProgram(sourcePaths);
+    const typeChecker = semanticProgram.getTypeChecker();
+    const ownedSignatures = readOwnedSemanticSignatures(semanticProgram);
 
-    for (const sourcePath of await listTypeScriptFiles(SOURCE_ROOT)) {
+    for (const sourcePath of sourcePaths) {
       const repositoryRelativePath = relative(REPOSITORY_ROOT, sourcePath);
-      for (const structuralDeclaration of readStructuralDeclarations(
+      for (const structuralDeclaration of readSemanticStructuralDeclarations(
+        semanticProgram,
         sourcePath,
-        await readFile(sourcePath, "utf8"),
       )) {
         const ownedSignature = ownedSignatures.get(
           structuralDeclaration.signature,
         );
-        if (ownedSignature) {
+        if (
+          ownedSignature &&
+          !doesDeclarationReuseOwner(
+            structuralDeclaration,
+            ownedSignature,
+            typeChecker,
+          )
+        ) {
           expect(
             repositoryRelativePath,
             `${structuralDeclaration.name} copies ${ownedSignature.symbolName}.`,
@@ -373,22 +655,114 @@ describe("public contract inventory", () => {
     }
   });
 
-  test("detects a hostile renamed and reordered measurement DTO copy", async () => {
-    const ownedSignatures = await readOwnedStructuralSignatures();
-    const [hostileDeclaration] = readStructuralDeclarations(
-      "src/adapters/alternate-invocation-measurements.ts",
-      `interface AlternateInvocationMeasurements {
-        tokens: TokenUsage | null;
-        cost: MonetaryAmount | null;
-        durationMs: number | null;
-      }`,
+  test("detects compiling quoted-key, intersection, and heritage DTO copies", async () => {
+    const sourcePaths = await listTypeScriptFiles(SOURCE_ROOT);
+    const hostileSourcePath = resolve(
+      SOURCE_ROOT,
+      "adapters/alternate-invocation-measurements.ts",
     );
+    const semanticProgram = createSemanticProgram(sourcePaths, {
+      sourcePath: hostileSourcePath,
+      sourceText: `import type {
+          InvocationMeasurements,
+          MonetaryAmount,
+          TokenUsage,
+        } from "../contracts/invocation/invocation-measurements.js";
 
-    expect(hostileDeclaration).toBeDefined();
-    expect(ownedSignatures.get(hostileDeclaration?.signature ?? "")).toEqual({
-      ownerPath: "src/contracts/invocation/invocation-measurements.ts",
-      symbolName: "InvocationMeasurements",
+        interface QuotedInvocationMeasurements {
+          "tokens": TokenUsage | null;
+          "cost": MonetaryAmount | null;
+          "durationMs": number | null;
+        }
+
+        type SplitInvocationMeasurements = {
+          "durationMs": number | null;
+        } & {
+          cost: MonetaryAmount | null;
+        } & {
+          tokens: TokenUsage | null;
+        };
+
+        interface MeasurementDuration {
+          "durationMs": number | null;
+        }
+        interface MeasurementCost extends MeasurementDuration {
+          cost: MonetaryAmount | null;
+        }
+        interface HeritageInvocationMeasurements extends MeasurementCost {
+          tokens: TokenUsage | null;
+        }
+
+        type ReusedInvocationMeasurements = InvocationMeasurements;
+        interface ReusedInvocationMeasurementsInterface
+          extends InvocationMeasurements {}
+        interface ExtendedInvocationMeasurements
+          extends InvocationMeasurements {
+          source: string;
+        }
+
+        export type {
+          ExtendedInvocationMeasurements,
+          HeritageInvocationMeasurements,
+          QuotedInvocationMeasurements,
+          ReusedInvocationMeasurements,
+          ReusedInvocationMeasurementsInterface,
+          SplitInvocationMeasurements,
+        };`,
     });
+    const hostileDeclarations = readSemanticStructuralDeclarations(
+      semanticProgram,
+      hostileSourcePath,
+    );
+    const ownedSignatures = readOwnedSemanticSignatures(semanticProgram);
+    const invocationOwnerPath =
+      "src/contracts/invocation/invocation-measurements.ts";
+
+    expect(ts.getPreEmitDiagnostics(semanticProgram)).toEqual([]);
+    for (const hostileName of [
+      "QuotedInvocationMeasurements",
+      "SplitInvocationMeasurements",
+      "HeritageInvocationMeasurements",
+    ]) {
+      const hostileDeclaration = hostileDeclarations.find(
+        (declaration) => declaration.name === hostileName,
+      );
+      expect(hostileDeclaration).toBeDefined();
+      expect(
+        ownedSignatures.get(hostileDeclaration?.signature ?? "")?.ownerPath,
+      ).toBe(invocationOwnerPath);
+    }
+
+    for (const reusedName of [
+      "ReusedInvocationMeasurements",
+      "ReusedInvocationMeasurementsInterface",
+    ]) {
+      const reusedDeclaration = hostileDeclarations.find(
+        (declaration) => declaration.name === reusedName,
+      );
+      const reusedOwner = ownedSignatures.get(
+        reusedDeclaration?.signature ?? "",
+      );
+      expect(reusedDeclaration).toBeDefined();
+      expect(reusedOwner?.ownerPath).toBe(invocationOwnerPath);
+      expect(
+        reusedDeclaration && reusedOwner
+          ? doesDeclarationReuseOwner(
+              reusedDeclaration,
+              reusedOwner,
+              semanticProgram.getTypeChecker(),
+            )
+          : false,
+      ).toBe(true);
+    }
+
+    const extendedDeclaration = hostileDeclarations.find(
+      (declaration) => declaration.name === "ExtendedInvocationMeasurements",
+    );
+    expect(extendedDeclaration).toBeDefined();
+    expect(ownedSignatures.has(extendedDeclaration?.signature ?? "")).toBe(
+      false,
+    );
   });
 
   test("keeps the human inventory synchronized with executable ownership", async () => {
