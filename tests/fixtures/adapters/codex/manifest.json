@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "roadmapNode": "SPI-02",
+  "capturedAt": "2026-08-09T11:42:00Z",
+  "cli": {
+    "name": "codex-cli",
+    "version": "0.146.0",
+    "platform": "Darwin arm64",
+    "authenticationPrerequisite": "codex login status reported saved ChatGPT authentication; no credential file or value was read"
+  },
+  "officialDocumentation": {
+    "url": "https://developers.openai.com/codex/noninteractive",
+    "accessedAt": "2026-08-09"
+  },
+  "sanitization": {
+    "replacements": [
+      "thread identifiers -> [SANITIZED_THREAD_ID]",
+      "wall-clock timestamps -> [SANITIZED_TIMESTAMP]",
+      "host-specific startup warning -> [SANITIZED_HOST_WARNING]"
+    ],
+    "preserved": [
+      "JSONL line order",
+      "event and item field names",
+      "command lifecycle and exit status",
+      "usage values",
+      "stdout/stderr separation",
+      "workspace relative path, byte length, and bytes"
+    ]
+  },
+  "captures": [
+    {
+      "id": "live-command-workspace",
+      "source": "live",
+      "providerInvocation": true,
+      "invocation": [
+        "codex",
+        "-a",
+        "never",
+        "exec",
+        "--json",
+        "--ephemeral",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "-s",
+        "workspace-write",
+        "-C",
+        "[SANITIZED_TEMP_GIT_REPOSITORY]",
+        "[SANITIZED_NON_NESTED_PROMPT]"
+      ],
+      "nestedAgentWork": "prohibited by prompt and orchestration policy; not exercised",
+      "approvalBehavior": "approval policy was never; no approval event was requested or observed",
+      "signal": null,
+      "files": [
+        {
+          "path": "0.146.0/live-command-workspace/stdout.jsonl",
+          "sha256": "cf2eee0f8a66f6f3294c8a17a9bcb56d7d3e4d716547ec34db56dd0b5710b982"
+        },
+        {
+          "path": "0.146.0/live-command-workspace/stderr.txt",
+          "sha256": "f9ef994a197c46bfdd9ac5d19268bde8a262d1f9aa66e466d6ac747561ba846b"
+        },
+        {
+          "path": "0.146.0/live-command-workspace/exit-code.txt",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+        },
+        {
+          "path": "0.146.0/live-command-workspace/workspace-after.json",
+          "sha256": "4b3b01cdef0f894c8dc3bc81c768ad82b5e593b41dd709244fdb2643df95c972"
+        }
+      ]
+    },
+    {
+      "id": "invalid-option",
+      "source": "live-local-validation",
+      "providerInvocation": false,
+      "invocation": ["codex", "exec", "-a", "never", "[PROMPT]"],
+      "files": [
+        {
+          "path": "0.146.0/invalid-option/stderr.txt",
+          "sha256": "22f20bff1728ca1f1887b1db483e60cf3c18b460fd5c0dfb7794e8c97ebbf15a"
+        },
+        {
+          "path": "0.146.0/invalid-option/exit-code.txt",
+          "sha256": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-negative",
+      "source": "synthetic",
+      "providerInvocation": false,
+      "purpose": "deterministic malformed, partial, and additive-unknown replay probes only",
+      "files": [
+        {
+          "path": "synthetic-negative/malformed.jsonl",
+          "sha256": "84e27a88971eed90d890ec4d870b6004f2aa6165424b9f37631d27d5d69bedfc"
+        },
+        {
+          "path": "synthetic-negative/partial.jsonl",
+          "sha256": "17e25d24f75e178bd299483f139e14f390fefd3cce88686b1e54cbce2981b18e"
+        },
+        {
+          "path": "synthetic-negative/unknown-event.jsonl",
+          "sha256": "944690d43aaed510e451ecc0d2ef2778715e019ba56e819dc4c63767ee6277c4"
+        }
+      ]
+    }
+  ],
+  "coverage": {
+    "observed": [
+      "assistant message",
+      "command start and completion",
+      "usage",
+      "successful exit",
+      "parse-time usage error",
+      "workspace file addition",
+      "successful run with stderr warnings"
+    ],
+    "notExercised": [
+      "approval request and denial",
+      "cancellation and signals",
+      "compaction",
+      "nested agent work",
+      "MCP tools",
+      "web search",
+      "file-change item",
+      "provider error after stream start",
+      "parallel items"
+    ]
+  }
+}
