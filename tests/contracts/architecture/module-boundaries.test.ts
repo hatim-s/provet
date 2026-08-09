@@ -23,6 +23,8 @@ const HOST_MODULE_SPECIFIERS = new Set([
 const HOST_FREE_MODULES = new Set(["application", "contracts", "execution"]);
 const HOST_GLOBAL_NAMES = new Set([
   "Bun",
+  "Function",
+  "eval",
   "global",
   "globalThis",
   "process",
@@ -223,6 +225,66 @@ function readBindingSymbols(
   );
 }
 
+/** Reads a statically named property from dot or bracket access. */
+function readAccessedPropertyName(
+  expression: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+): string | null {
+  if (ts.isPropertyAccessExpression(expression)) {
+    return expression.name.text;
+  }
+
+  return expression.argumentExpression &&
+    ts.isStringLiteral(expression.argumentExpression)
+    ? expression.argumentExpression.text
+    : null;
+}
+
+/** Removes syntax-only wrappers before classifying a runtime expression. */
+function readUnwrappedExpression(expression: ts.Expression): ts.Expression {
+  if (
+    ts.isAsExpression(expression) ||
+    ts.isNonNullExpression(expression) ||
+    ts.isParenthesizedExpression(expression) ||
+    ts.isSatisfiesExpression(expression) ||
+    ts.isTypeAssertionExpression(expression)
+  ) {
+    return readUnwrappedExpression(expression.expression);
+  }
+
+  return expression;
+}
+
+/** Detects dynamic loaders and function constructors reached without a global name. */
+function isIntrinsicDynamicCapability(
+  expression: ts.Expression,
+  typeChecker: ts.TypeChecker,
+): boolean {
+  if (
+    !ts.isPropertyAccessExpression(expression) &&
+    !ts.isElementAccessExpression(expression)
+  ) {
+    return false;
+  }
+
+  const accessedPropertyName = readAccessedPropertyName(expression);
+  if (
+    accessedPropertyName === "require" &&
+    ts.isMetaProperty(expression.expression) &&
+    expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword
+  ) {
+    return true;
+  }
+
+  const constructorOwner = readUnwrappedExpression(expression.expression);
+  return (
+    accessedPropertyName === "constructor" &&
+    (ts.isArrowFunction(constructorOwner) ||
+      ts.isFunctionExpression(constructorOwner) ||
+      typeChecker.getTypeAtLocation(constructorOwner).getCallSignatures()
+        .length > 0)
+  );
+}
+
 /** Reports whether an expression exposes a host capability directly or through aliases. */
 function doesExpressionExposeHost(
   expression: ts.Expression,
@@ -243,6 +305,9 @@ function doesExpressionExposeHost(
     ts.isPropertyAccessExpression(expression) ||
     ts.isElementAccessExpression(expression)
   ) {
+    if (isIntrinsicDynamicCapability(expression, typeChecker)) {
+      return true;
+    }
     return doesExpressionExposeHost(
       expression.expression,
       typeChecker,
@@ -376,6 +441,14 @@ function inspectSourceDependencies(
 
   /** Finds dynamic loading and checker-resolved host aliases. */
   const inspectNode = (node: ts.Node): void => {
+    if (
+      (ts.isPropertyAccessExpression(node) ||
+        ts.isElementAccessExpression(node)) &&
+      isIntrinsicDynamicCapability(node, typeChecker)
+    ) {
+      hostBoundaryViolations.push("intrinsic dynamic host capability");
+    }
+
     if (ts.isCallExpression(node)) {
       if (node.expression.kind === ts.SyntaxKind.ImportKeyword) {
         hostBoundaryViolations.push("dynamic import");
@@ -644,17 +717,104 @@ describe("module dependency boundaries", () => {
     ).not.toEqual([]);
   });
 
-  test("permits local names that shadow host globals without exposing them", () => {
-    const sourcePath = resolve(
-      SOURCE_ROOT,
-      "application/local-process-port.ts",
-    );
-    const sourceProgram = createBoundaryProgram({
-      sourcePath,
-      sourceText: `const process = { version: "domain-version" };
-        const runtimeVersion = process.version;
-        export { runtimeVersion };`,
-    });
+  test.each([
+    [
+      "ambient eval",
+      "application",
+      `const runtimeProcess = eval("process");
+       export { runtimeProcess };`,
+    ],
+    [
+      "Function constructor",
+      "contracts",
+      `const runtimeProcess = Function("return process")();
+       export { runtimeProcess };`,
+    ],
+    [
+      "import.meta.require",
+      "execution",
+      `const fileSystem = import.meta.require("node:fs");
+       export { fileSystem };`,
+    ],
+    [
+      "multi-hop eval alias",
+      "application",
+      `const firstEvaluator = eval;
+       const secondEvaluator = firstEvaluator;
+       const runtimeProcess = secondEvaluator("process");
+       export { runtimeProcess };`,
+    ],
+    [
+      "multi-hop Function alias",
+      "contracts",
+      `const firstConstructor = Function;
+       const secondConstructor = firstConstructor;
+       const runtimeProcess = secondConstructor("return process")();
+       export { runtimeProcess };`,
+    ],
+    [
+      "multi-hop import.meta.require alias",
+      "execution",
+      `const firstLoader = import.meta.require;
+       const secondLoader = firstLoader;
+       const fileSystem = secondLoader("node:fs");
+       export { fileSystem };`,
+    ],
+    [
+      "function constructor property",
+      "application",
+      `const dynamicConstructor = (function domainFunction() {}).constructor;
+       export { dynamicConstructor };`,
+    ],
+  ])(
+    "rejects a compiling %s loader in %s",
+    (_description, protectedModule, hostileSource) => {
+      const hostileSourcePath = resolve(
+        SOURCE_ROOT,
+        protectedModule,
+        "dynamic-host-loader-probe.ts",
+      );
+      const hostileProgram = createBoundaryProgram({
+        sourcePath: hostileSourcePath,
+        sourceText: hostileSource,
+      });
+
+      expect(ts.getPreEmitDiagnostics(hostileProgram)).toEqual([]);
+      expect(
+        inspectSourceFile(hostileProgram, hostileSourcePath)
+          .hostBoundaryViolations,
+      ).not.toEqual([]);
+    },
+  );
+
+  test.each([
+    [
+      "process",
+      `const process = { version: "domain-version" };
+       const value = process.version;
+       export { value };`,
+    ],
+    [
+      "eval property",
+      `const evaluator = { eval: (source: string) => source };
+       const value = evaluator.eval("domain-value");
+       export { value };`,
+    ],
+    [
+      "Function",
+      `const Function = (source: string) => source;
+       const value = Function("domain-value");
+       export { value };`,
+    ],
+    [
+      "require property",
+      `const moduleMetadata = { require: (name: string) => name };
+       const value = moduleMetadata.require("domain-module");
+       export { value };`,
+    ],
+  ])("permits a compiling local %s shadow", (_description, sourceText) => {
+    const sourcePath = resolve(SOURCE_ROOT, "application/local-host-name.ts");
+    const sourceProgram = createBoundaryProgram({ sourcePath, sourceText });
 
     expect(ts.getPreEmitDiagnostics(sourceProgram)).toEqual([]);
     expect(

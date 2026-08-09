@@ -106,7 +106,7 @@ async function readDeclaredNames(
 }
 
 interface SemanticStructuralDeclaration {
-  declaration: ts.InterfaceDeclaration | ts.TypeAliasDeclaration;
+  declaration: ts.Declaration;
   name: string;
   signature: string;
 }
@@ -397,7 +397,112 @@ function readSemanticTypeSignature(
     .join(";")})`;
 }
 
-/** Reads semantic signatures for top-level DTO interfaces and type aliases. */
+/** Reads names deliberately exported from one source module. */
+function readExportedLocalNames(
+  sourceFile: ts.SourceFile,
+): ReadonlySet<string> {
+  const exportedLocalNames = new Set<string>();
+
+  for (const statement of sourceFile.statements) {
+    if (
+      ts.isExportDeclaration(statement) &&
+      !statement.moduleSpecifier &&
+      statement.exportClause &&
+      ts.isNamedExports(statement.exportClause)
+    ) {
+      for (const exportSpecifier of statement.exportClause.elements) {
+        exportedLocalNames.add(
+          (exportSpecifier.propertyName ?? exportSpecifier.name).text,
+        );
+      }
+    }
+
+    if (
+      ts.canHaveModifiers(statement) &&
+      ts
+        .getModifiers(statement)
+        ?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)
+    ) {
+      if (
+        (ts.isClassDeclaration(statement) ||
+          ts.isFunctionDeclaration(statement) ||
+          ts.isInterfaceDeclaration(statement) ||
+          ts.isTypeAliasDeclaration(statement)) &&
+        statement.name
+      ) {
+        exportedLocalNames.add(statement.name.text);
+      } else if (ts.isVariableStatement(statement)) {
+        for (const variableDeclaration of statement.declarationList
+          .declarations) {
+          if (ts.isIdentifier(variableDeclaration.name)) {
+            exportedLocalNames.add(variableDeclaration.name.text);
+          }
+        }
+      }
+    }
+  }
+
+  return exportedLocalNames;
+}
+
+/** Reports whether a semantic type exposes a public object shape. */
+function isObjectShape(semanticType: ts.Type): boolean {
+  return semanticType.isUnion() || semanticType.isIntersection()
+    ? semanticType.types.every((memberType) => isObjectShape(memberType))
+    : Boolean(semanticType.flags & ts.TypeFlags.Object);
+}
+
+/** Reads the public object types exposed by an exported value declaration. */
+function readValueDeclarationTypes(
+  declaration:
+    | ts.ClassDeclaration
+    | ts.FunctionDeclaration
+    | ts.VariableDeclaration,
+  typeChecker: ts.TypeChecker,
+): readonly ts.Type[] {
+  if (ts.isClassDeclaration(declaration)) {
+    if (!declaration.name) {
+      return [];
+    }
+    const classSymbol = typeChecker.getSymbolAtLocation(declaration.name);
+    return classSymbol
+      ? [typeChecker.getDeclaredTypeOfSymbol(classSymbol)]
+      : [];
+  }
+  if (ts.isFunctionDeclaration(declaration)) {
+    const callSignature = typeChecker.getSignatureFromDeclaration(declaration);
+    return callSignature
+      ? [typeChecker.getReturnTypeOfSignature(callSignature)]
+      : [];
+  }
+
+  const variableSymbol = ts.isIdentifier(declaration.name)
+    ? typeChecker.getSymbolAtLocation(declaration.name)
+    : undefined;
+  if (!variableSymbol) {
+    return [];
+  }
+  const variableType = typeChecker.getTypeOfSymbolAtLocation(
+    variableSymbol,
+    declaration,
+  );
+  const constructedTypes = variableType
+    .getConstructSignatures()
+    .map((constructSignature) =>
+      typeChecker.getReturnTypeOfSignature(constructSignature),
+    );
+  if (constructedTypes.length > 0) {
+    return constructedTypes;
+  }
+  const returnedTypes = variableType
+    .getCallSignatures()
+    .map((callSignature) =>
+      typeChecker.getReturnTypeOfSignature(callSignature),
+    );
+  return returnedTypes.length > 0 ? returnedTypes : [variableType];
+}
+
+/** Reads semantic signatures for owned types and exported object surfaces. */
 function readSemanticStructuralDeclarations(
   program: ts.Program,
   sourcePath: string,
@@ -408,21 +513,80 @@ function readSemanticStructuralDeclarations(
   }
   const typeChecker = program.getTypeChecker();
   const structuralDeclarations: SemanticStructuralDeclaration[] = [];
+  const exportedLocalNames = readExportedLocalNames(sourceFile);
+
+  /** Records one checker-resolved object shape for ownership comparison. */
+  const recordStructuralDeclaration = (
+    declaration: ts.Declaration,
+    declarationName: string,
+    semanticType: ts.Type,
+  ): void => {
+    if (!isObjectShape(semanticType)) {
+      return;
+    }
+    structuralDeclarations.push({
+      declaration,
+      name: declarationName,
+      signature: readSemanticTypeSignature(
+        semanticType,
+        declaration,
+        typeChecker,
+      ),
+    });
+  };
 
   for (const statement of sourceFile.statements) {
     if (
       ts.isInterfaceDeclaration(statement) ||
       ts.isTypeAliasDeclaration(statement)
     ) {
-      structuralDeclarations.push({
-        declaration: statement,
-        name: statement.name.text,
-        signature: readSemanticTypeSignature(
-          typeChecker.getTypeAtLocation(statement),
+      recordStructuralDeclaration(
+        statement,
+        statement.name.text,
+        typeChecker.getTypeAtLocation(statement),
+      );
+      continue;
+    }
+
+    if (
+      (ts.isClassDeclaration(statement) ||
+        ts.isFunctionDeclaration(statement)) &&
+      statement.name &&
+      exportedLocalNames.has(statement.name.text)
+    ) {
+      for (const exposedType of readValueDeclarationTypes(
+        statement,
+        typeChecker,
+      )) {
+        recordStructuralDeclaration(
           statement,
+          statement.name.text,
+          exposedType,
+        );
+      }
+      continue;
+    }
+
+    if (ts.isVariableStatement(statement)) {
+      for (const variableDeclaration of statement.declarationList
+        .declarations) {
+        if (
+          !ts.isIdentifier(variableDeclaration.name) ||
+          !exportedLocalNames.has(variableDeclaration.name.text)
+        ) {
+          continue;
+        }
+        for (const exposedType of readValueDeclarationTypes(
+          variableDeclaration,
           typeChecker,
-        ),
-      });
+        )) {
+          recordStructuralDeclaration(
+            variableDeclaration,
+            variableDeclaration.name.text,
+            exposedType,
+          );
+        }
+      }
     }
   }
 
@@ -655,7 +819,7 @@ describe("public contract inventory", () => {
     }
   });
 
-  test("detects compiling quoted-key, intersection, and heritage DTO copies", async () => {
+  test("detects compiling interface, intersection, heritage, and class DTO copies", async () => {
     const sourcePaths = await listTypeScriptFiles(SOURCE_ROOT);
     const hostileSourcePath = resolve(
       SOURCE_ROOT,
@@ -693,21 +857,42 @@ describe("public contract inventory", () => {
           tokens: TokenUsage | null;
         }
 
+        class AlternateInvocationMeasurementsClass {
+          declare cost: MonetaryAmount | null;
+          declare durationMs: number | null;
+          declare tokens: TokenUsage | null;
+        }
+
         type ReusedInvocationMeasurements = InvocationMeasurements;
         interface ReusedInvocationMeasurementsInterface
           extends InvocationMeasurements {}
+        class ReusedInvocationMeasurementsClass
+          implements InvocationMeasurements {
+          declare cost: MonetaryAmount | null;
+          declare durationMs: number | null;
+          declare tokens: TokenUsage | null;
+        }
         interface ExtendedInvocationMeasurements
           extends InvocationMeasurements {
           source: string;
         }
+        const reusedInvocationMeasurementsValue =
+          {} as InvocationMeasurements;
+        function createReusedInvocationMeasurements(): InvocationMeasurements {
+          return reusedInvocationMeasurementsValue;
+        }
 
-        export type {
-          ExtendedInvocationMeasurements,
-          HeritageInvocationMeasurements,
-          QuotedInvocationMeasurements,
-          ReusedInvocationMeasurements,
-          ReusedInvocationMeasurementsInterface,
-          SplitInvocationMeasurements,
+        export {
+          AlternateInvocationMeasurementsClass,
+          createReusedInvocationMeasurements,
+          ReusedInvocationMeasurementsClass,
+          reusedInvocationMeasurementsValue,
+          type ExtendedInvocationMeasurements,
+          type HeritageInvocationMeasurements,
+          type QuotedInvocationMeasurements,
+          type ReusedInvocationMeasurements,
+          type ReusedInvocationMeasurementsInterface,
+          type SplitInvocationMeasurements,
         };`,
     });
     const hostileDeclarations = readSemanticStructuralDeclarations(
@@ -723,11 +908,14 @@ describe("public contract inventory", () => {
       "QuotedInvocationMeasurements",
       "SplitInvocationMeasurements",
       "HeritageInvocationMeasurements",
+      "AlternateInvocationMeasurementsClass",
     ]) {
+      expect(
+        hostileDeclarations.map((declaration) => declaration.name),
+      ).toContain(hostileName);
       const hostileDeclaration = hostileDeclarations.find(
         (declaration) => declaration.name === hostileName,
       );
-      expect(hostileDeclaration).toBeDefined();
       expect(
         ownedSignatures.get(hostileDeclaration?.signature ?? "")?.ownerPath,
       ).toBe(invocationOwnerPath);
@@ -736,6 +924,9 @@ describe("public contract inventory", () => {
     for (const reusedName of [
       "ReusedInvocationMeasurements",
       "ReusedInvocationMeasurementsInterface",
+      "ReusedInvocationMeasurementsClass",
+      "reusedInvocationMeasurementsValue",
+      "createReusedInvocationMeasurements",
     ]) {
       const reusedDeclaration = hostileDeclarations.find(
         (declaration) => declaration.name === reusedName,

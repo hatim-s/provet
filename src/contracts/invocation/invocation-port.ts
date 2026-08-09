@@ -103,7 +103,9 @@ interface UnsafeLocalTargetCapabilityGrant {
       effectiveWorkspaceAccess: "unrestricted";
       workspaceEnforcement: "unenforced";
     }
-  >;
+  > & {
+    requestedWorkspaceAccess: "read-write";
+  };
 }
 
 interface NamedProfileTargetCapabilityGrant {
