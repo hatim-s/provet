@@ -14,6 +14,7 @@ not that Codex added or changed the file.
 
 The `synthetic-negative` family exists only to exercise replay degradation for
 malformed JSON, partial streams, invalid lifecycle framing, malformed known
-items, duplicate or unmatched item records, additive unknown events, hostile
-family members, and unknown item discriminators. Synthetic files must never be
-reported as proof of live Codex behavior.
+event/item combinations, missing required nested fields, invalid usage
+counters, interior blank records, duplicate or unmatched item records, additive
+unknown events, hostile family members, and unknown item discriminators.
+Synthetic files must never be reported as proof of live Codex behavior.

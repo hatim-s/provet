@@ -1,4 +1,4 @@
 {"type":"thread.started","thread_id":"[SANITIZED_THREAD_ID]"}
 {"type":"turn.started"}
 {"type":"item.started","item":{"type":"command_execution","command":"synthetic command","aggregated_output":"","exit_code":null,"status":"in_progress"}}
-{"type":"turn.completed","usage":{}}
+{"type":"turn.completed","usage":{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0}}

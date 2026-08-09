@@ -174,18 +174,27 @@ invented today.
 The replay spike under `tests/unit/adapters/codex/` applies these conservative
 rules:
 
-1. Read complete newline-delimited records in emission order and retain each raw
-   line with its parsed value.
-2. On malformed JSON, retain the valid prefix, record the exact one-based
-   failing line, mark the trajectory partial, and return an adapter protocol
-   failure. Never replace the prefix with a synthetic fallback event.
+1. Strip only the normal final line terminator, address every remaining record
+   in emission order, and retain its raw bytes even when it cannot be parsed as
+   an event. An interior blank line is malformed protocol provenance, not
+   ignorable whitespace.
+2. On malformed JSON, an interior blank record, or invalid event framing,
+   retain all line-addressed raw records plus the valid parsed prefix, record
+   the exact one-based failing line, mark the trajectory partial, and return an
+   adapter protocol failure. Never replace the prefix with a synthetic fallback
+   event.
 3. On EOF without `turn.completed` or `turn.failed`, retain open item IDs, mark
    the trajectory partial, and fail protocol completion even when the process
    exit is `0`.
-4. Validate the minimum evidenced lifecycle before claiming completeness:
-   `thread.started`, then `turn.started`, matched command item starts and
-   completions, atomic completed agent messages, then a terminal record.
-   Malformed shapes, reordered or duplicate records, unmatched completions, and
+4. Validate the exact evidenced event/item combinations before claiming
+   completeness: command starts require rendered command, aggregate output,
+   `null` exit, and `in_progress`; command completions require those string
+   fields, a non-negative integer exit, and `completed`; agent messages are
+   completion-only and require text; terminal usage requires all five observed
+   non-negative integer counters. Then require `thread.started`,
+   `turn.started`, matched command lifecycles, atomic completed agent messages,
+   and a terminal record in that order. Malformed shapes, unevidenced
+   combinations, reordered or duplicate records, unmatched completions, and
    terminals with open items remain in the raw replay with line-addressed
    diagnostics and force completeness false.
 5. Enumerate only exact evidenced top-level event types and item discriminators.
@@ -200,9 +209,9 @@ rules:
 7. Preserve stdout, stderr, exit, signal, version, and workspace evidence as
    separate channels. Redaction occurs before any shareable persistence.
 
-The malformed, partial, lifecycle-hostile, and unknown-event streams are
-synthetic and labelled as such in provenance. They verify deterministic parser
-behavior, not provider compatibility.
+The malformed, partial, shape-hostile, lifecycle-hostile, and unknown-event
+streams are synthetic and labelled as such in provenance. They verify
+deterministic parser behavior, not provider compatibility.
 
 ## Supported-version policy
 
@@ -239,6 +248,8 @@ an incidental parser choice.
 | Parse-time CLI error | Live local validation | Support zero-event non-zero exit. |
 | Malformed/partial JSONL | Synthetic negative | Fail protocol with retained prefix; not live compatibility. |
 | Malformed/reordered known records | Synthetic negative | Retain raw records, diagnose invalid framing or item lifecycle, and keep completeness false; not live compatibility. |
+| Malformed nested shape or unevidenced event/item combination | Synthetic negative | Retain raw records, diagnose exact item/usage requirements, and keep completeness false; not live compatibility. |
+| Interior blank JSONL record | Synthetic negative | Retain every line-addressed raw record, stop parsed replay at the blank record, and keep completeness false; not live compatibility. |
 | Additive unknown event or item discriminator | Synthetic negative | Retain raw, record the unsupported discriminator, and degrade completeness even under familiar prefixes. |
 | Approval request/denial | Not exercised | Unsupported/unknown; no mapping may be claimed. |
 | Cancellation/signals | Not exercised | Unsupported/unknown; supervisor evidence must be captured before support. |
@@ -254,8 +265,9 @@ The owned tests provide three independent gates:
 
 - replay tests prove raw-order retention, framed item lifecycle, final message,
   usage, separate stderr/exit/workspace after-state evidence, malformed-line
-  reporting, partial open-item retention, line-addressed lifecycle diagnostics,
-  and hostile unknown event/item preservation with degraded completeness;
+  reporting, interior-blank raw provenance, partial open-item retention, exact
+  nested-shape and line-addressed lifecycle diagnostics, and hostile unknown
+  event/item preservation with degraded completeness;
 - provenance contract tests verify source classification and SHA-256 of every
   manifest-owned fixture byte;
 - secret-scan contract tests reject credential-shaped values, private keys,

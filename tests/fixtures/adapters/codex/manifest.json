@@ -94,7 +94,7 @@
       "id": "synthetic-negative",
       "source": "synthetic",
       "providerInvocation": false,
-      "purpose": "deterministic malformed, partial, lifecycle-hostile, and additive-unknown replay probes only",
+      "purpose": "deterministic malformed, partial, shape-hostile, lifecycle-hostile, and additive-unknown replay probes only",
       "files": [
         {
           "path": "synthetic-negative/malformed.jsonl",
@@ -118,19 +118,31 @@
         },
         {
           "path": "synthetic-negative/terminal-only.jsonl",
-          "sha256": "9599e15d12e67236dc2ece01bed61effdb59b7633d04b45e026905fbea69d510"
+          "sha256": "83e3bcdc4d1acb9707bd6714154da41291ed2f0242a8b9cf85720fe4c7701ce7"
         },
         {
           "path": "synthetic-negative/missing-item-identifier.jsonl",
-          "sha256": "1540f6d883c21070db7c80bad7433fa730ae3ee598e4f55f2db2b74a508ee904"
+          "sha256": "ba90b4ab0d5c971a76ca855ac3d4ceaab90c9a3adfd3e99000bb11ee2b78415b"
         },
         {
           "path": "synthetic-negative/unmatched-item-completion.jsonl",
-          "sha256": "f82b8a74a8073506eabaec0a52c8f440073a7f961717638bd4f03f29e494038e"
+          "sha256": "31b8dd8bc03f30052b2bfaf275e42e335f35150220fa00724cfe3e2e4d8b76b2"
         },
         {
           "path": "synthetic-negative/duplicate-item-start.jsonl",
-          "sha256": "a63ece899fbed62dc7a81f5c2a86dd76272f46d445b726c368f4b11cd1840685"
+          "sha256": "30056ad3fa6365a210c69c2fa719bd8cc53f478a7f145fd8c229e616507148fa"
+        },
+        {
+          "path": "synthetic-negative/malformed-observed-shapes.jsonl",
+          "sha256": "64e94981bf044931cb1ad8014b0d88f934be421bd875a156a6ecb6f35e41d6ae"
+        },
+        {
+          "path": "synthetic-negative/unevidenced-agent-message-start.jsonl",
+          "sha256": "4d16b4dc8428e91f8a5765449454f97e36d5676a599df18cc78f5e3161b00dee"
+        },
+        {
+          "path": "synthetic-negative/interior-blank-line.jsonl",
+          "sha256": "57ed13ac51968243461935778ab77438e6d154de559a327b95b8d4af2c10a205"
         }
       ]
     }

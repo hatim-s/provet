@@ -7,6 +7,11 @@ interface ReplayedCodexEvent {
   value: NativeCodexEvent;
 }
 
+interface ReplayedCodexRawRecord {
+  lineNumber: number;
+  rawLine: string;
+}
+
 interface CodexStreamReplay {
   events: ReplayedCodexEvent[];
   isTerminal: boolean;
@@ -14,6 +19,7 @@ interface CodexStreamReplay {
   malformedLineNumber: number | null;
   openItemIdentifiers: string[];
   protocolDiagnostics: CodexProtocolDiagnostic[];
+  rawRecords: ReplayedCodexRawRecord[];
   unknownEventTypes: string[];
   unknownItemTypes: string[];
 }
@@ -27,6 +33,7 @@ type CodexProtocolDiagnosticCode =
   | "malformed-event-shape"
   | "malformed-item-shape"
   | "terminal-with-open-items"
+  | "unevidenced-item-event-combination"
   | "unmatched-item-completion";
 
 interface CodexProtocolDiagnostic {
@@ -59,7 +66,12 @@ interface NativeCodexEvent extends Record<string, unknown> {
 }
 
 interface NativeCodexItem extends Record<string, unknown> {
+  aggregated_output?: unknown;
+  command?: unknown;
+  exit_code?: unknown;
   id: string;
+  status?: unknown;
+  text?: unknown;
   type: string;
 }
 
@@ -76,6 +88,13 @@ const evidencedEventTypes = new Set([
   "turn.completed",
 ]);
 const evidencedItemTypes = new Set(["agent_message", "command_execution"]);
+const evidencedUsageCounterNames = [
+  "input_tokens",
+  "cached_input_tokens",
+  "cache_write_input_tokens",
+  "output_tokens",
+  "reasoning_output_tokens",
+] as const;
 
 /** Returns whether an unknown JSON value is a non-null object record. */
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
@@ -112,6 +131,59 @@ function isEvidencedEventType(eventType: string): boolean {
 /** Returns whether an exact native item discriminator has live fixture evidence. */
 function isEvidencedItemType(itemType: string): boolean {
   return evidencedItemTypes.has(itemType);
+}
+
+/** Returns whether usage contains every observed non-negative integer counter. */
+function isEvidencedUsageShape(usage: unknown): boolean {
+  return (
+    isObjectRecord(usage) &&
+    evidencedUsageCounterNames.every((counterName) => {
+      const counterValue = usage[counterName];
+      return Number.isInteger(counterValue) && Number(counterValue) >= 0;
+    })
+  );
+}
+
+/** Returns whether a command item has the exact fields evidenced for its event. */
+function isEvidencedCommandItemShape(
+  eventType: "item.completed" | "item.started",
+  item: NativeCodexItem,
+): boolean {
+  const hasCommonShape =
+    typeof item.command === "string" &&
+    typeof item.aggregated_output === "string";
+  if (!hasCommonShape) {
+    return false;
+  }
+
+  if (eventType === "item.started") {
+    return item.exit_code === null && item.status === "in_progress";
+  }
+
+  return (
+    Number.isInteger(item.exit_code) &&
+    Number(item.exit_code) >= 0 &&
+    item.status === "completed"
+  );
+}
+
+/** Removes only the normal final line terminator and addresses every remaining record. */
+function collectCodexRawRecords(jsonLines: string): ReplayedCodexRawRecord[] {
+  let recordsText = jsonLines;
+  if (recordsText.endsWith("\r\n")) {
+    recordsText = recordsText.slice(0, -2);
+  } else if (recordsText.endsWith("\n")) {
+    recordsText = recordsText.slice(0, -1);
+  }
+
+  if (recordsText.length === 0) {
+    return [];
+  }
+
+  return recordsText.split("\n").map((rawLine, lineIndex) => ({
+    lineNumber: lineIndex + 1,
+    rawLine,
+  }));
 }
 
 /** Records a replay diagnostic without removing the offending raw event. */
@@ -178,7 +250,7 @@ function validateCodexLifecycleEvent(
   }
 
   if (event.type === "turn.completed") {
-    if (!isObjectRecord(event.usage)) {
+    if (!isEvidencedUsageShape(event.usage)) {
       addProtocolDiagnostic(
         lifecycle,
         "malformed-event-shape",
@@ -224,6 +296,47 @@ function validateCodexLifecycleEvent(
     addProtocolDiagnostic(
       lifecycle,
       "event-out-of-order",
+      event.type,
+      lineNumber,
+      item.id,
+    );
+    return;
+  }
+
+  if (!isEvidencedItemType(item.type)) {
+    return;
+  }
+
+  if (item.type === "agent_message") {
+    if (event.type === "item.started") {
+      addProtocolDiagnostic(
+        lifecycle,
+        "unevidenced-item-event-combination",
+        event.type,
+        lineNumber,
+        item.id,
+      );
+      return;
+    }
+    if (typeof item.text !== "string") {
+      addProtocolDiagnostic(
+        lifecycle,
+        "malformed-item-shape",
+        event.type,
+        lineNumber,
+        item.id,
+      );
+      return;
+    }
+  } else if (
+    !isEvidencedCommandItemShape(
+      event.type as "item.completed" | "item.started",
+      item,
+    )
+  ) {
+    addProtocolDiagnostic(
+      lifecycle,
+      "malformed-item-shape",
       event.type,
       lineNumber,
       item.id,
@@ -297,6 +410,7 @@ function validateCodexLifecycleEvent(
 /** Replays JSONL without discarding raw lines, unknown events, or an incomplete prefix. */
 function replayCodexJsonLines(jsonLines: string): CodexStreamReplay {
   const events: ReplayedCodexEvent[] = [];
+  const rawRecords = collectCodexRawRecords(jsonLines);
   const lifecycle: CodexReplayLifecycle = {
     activeItemTypes: new Map(),
     completedItemIdentifiers: new Set(),
@@ -309,22 +423,22 @@ function replayCodexJsonLines(jsonLines: string): CodexStreamReplay {
   const unknownItemTypes = new Set<string>();
   let malformedLineNumber: number | null = null;
 
-  const lines = jsonLines.split("\n");
-  for (const [lineIndex, rawLine] of lines.entries()) {
-    if (rawLine.length === 0) {
-      continue;
+  for (const { lineNumber, rawLine } of rawRecords) {
+    if (rawLine.trim().length === 0) {
+      malformedLineNumber = lineNumber;
+      break;
     }
 
     let parsedValue: unknown;
     try {
       parsedValue = JSON.parse(rawLine);
     } catch {
-      malformedLineNumber = lineIndex + 1;
+      malformedLineNumber = lineNumber;
       break;
     }
 
     if (!isNativeCodexEvent(parsedValue)) {
-      malformedLineNumber = lineIndex + 1;
+      malformedLineNumber = lineNumber;
       break;
     }
 
@@ -332,7 +446,7 @@ function replayCodexJsonLines(jsonLines: string): CodexStreamReplay {
     if (!isEvidencedEventType(parsedValue.type)) {
       unknownEventTypes.add(parsedValue.type);
     } else {
-      validateCodexLifecycleEvent(parsedValue, lineIndex + 1, lifecycle);
+      validateCodexLifecycleEvent(parsedValue, lineNumber, lifecycle);
     }
 
     const item = parsedValue.item;
@@ -360,6 +474,7 @@ function replayCodexJsonLines(jsonLines: string): CodexStreamReplay {
     malformedLineNumber,
     openItemIdentifiers: [...lifecycle.activeItemTypes.keys()],
     protocolDiagnostics: lifecycle.protocolDiagnostics,
+    rawRecords,
     unknownEventTypes: [...unknownEventTypes],
     unknownItemTypes: [...unknownItemTypes],
   };
@@ -378,6 +493,8 @@ describe("Codex JSONL replay spike", () => {
     expect(replay.isTrajectoryComplete).toBe(true);
     expect(replay.openItemIdentifiers).toEqual([]);
     expect(replay.protocolDiagnostics).toEqual([]);
+    expect(replay.rawRecords).toHaveLength(6);
+    expect(replay.rawRecords.at(-1)?.rawLine).toContain("turn.completed");
     expect(replay.unknownEventTypes).toEqual([]);
     expect(replay.unknownItemTypes).toEqual([]);
     expect(replay.events.map(({ value }) => value.type)).toEqual([
@@ -417,6 +534,10 @@ describe("Codex JSONL replay spike", () => {
 
     expect(replay.events).toHaveLength(2);
     expect(replay.malformedLineNumber).toBe(3);
+    expect(replay.rawRecords[2]).toMatchObject({
+      lineNumber: 3,
+      rawLine: expect.stringContaining('"type":"item.started"'),
+    });
     expect(replay.isTerminal).toBe(false);
     expect(replay.isTrajectoryComplete).toBe(false);
   });
@@ -452,7 +573,7 @@ describe("Codex JSONL replay spike", () => {
     ]);
     expect(replay.events).toHaveLength(1);
     expect(replay.events[0]?.rawLine).toBe(
-      '{"type":"turn.completed","usage":{}}',
+      '{"type":"turn.completed","usage":{"input_tokens":0,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0}}',
     );
   });
 
@@ -518,6 +639,91 @@ describe("Codex JSONL replay spike", () => {
       },
     ]);
     expect(replay.events[3]?.rawLine).toContain('"id":"item_duplicate"');
+  });
+
+  test("rejects malformed nested shapes for every evidenced combination", async () => {
+    const stdout = await readFile(
+      resolve(
+        fixtureRoot,
+        "synthetic-negative/malformed-observed-shapes.jsonl",
+      ),
+      "utf8",
+    );
+    const replay = replayCodexJsonLines(stdout);
+
+    expect(replay.isTerminal).toBe(true);
+    expect(replay.isTrajectoryComplete).toBe(false);
+    expect(replay.protocolDiagnostics).toEqual([
+      {
+        code: "malformed-item-shape",
+        eventType: "item.started",
+        itemIdentifier: "item_0",
+        lineNumber: 3,
+      },
+      {
+        code: "malformed-item-shape",
+        eventType: "item.completed",
+        itemIdentifier: "item_0",
+        lineNumber: 4,
+      },
+      {
+        code: "malformed-item-shape",
+        eventType: "item.completed",
+        itemIdentifier: "item_1",
+        lineNumber: 5,
+      },
+      {
+        code: "malformed-event-shape",
+        eventType: "turn.completed",
+        lineNumber: 6,
+      },
+    ]);
+    expect(replay.events).toHaveLength(6);
+    expect(replay.events[4]?.rawLine).toBe(
+      '{"type":"item.completed","item":{"id":"item_1","type":"agent_message"}}',
+    );
+  });
+
+  test("rejects an unevidenced agent message start combination", async () => {
+    const stdout = await readFile(
+      resolve(
+        fixtureRoot,
+        "synthetic-negative/unevidenced-agent-message-start.jsonl",
+      ),
+      "utf8",
+    );
+    const replay = replayCodexJsonLines(stdout);
+
+    expect(replay.isTerminal).toBe(true);
+    expect(replay.isTrajectoryComplete).toBe(false);
+    expect(replay.protocolDiagnostics).toEqual([
+      {
+        code: "unevidenced-item-event-combination",
+        eventType: "item.started",
+        itemIdentifier: "item_0",
+        lineNumber: 3,
+      },
+    ]);
+    expect(replay.events[2]?.rawLine).toContain(
+      '"type":"agent_message","text":"synthetic started message"',
+    );
+  });
+
+  test("retains an interior blank line as malformed raw provenance", async () => {
+    const stdout = await readFile(
+      resolve(fixtureRoot, "synthetic-negative/interior-blank-line.jsonl"),
+      "utf8",
+    );
+    const replay = replayCodexJsonLines(stdout);
+
+    expect(replay.malformedLineNumber).toBe(2);
+    expect(replay.isTerminal).toBe(false);
+    expect(replay.isTrajectoryComplete).toBe(false);
+    expect(replay.events).toHaveLength(1);
+    expect(replay.rawRecords).toHaveLength(4);
+    expect(replay.rawRecords[1]).toEqual({ lineNumber: 2, rawLine: "" });
+    expect(replay.rawRecords[2]?.rawLine).toBe('{"type":"turn.started"}');
+    expect(replay.rawRecords[3]?.rawLine).toContain("turn.completed");
   });
 
   test("retains additive unknown events while completing the known stream", async () => {
