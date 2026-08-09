@@ -476,6 +476,61 @@ describe("Claude Code replay parser spike", () => {
     },
   );
 
+  test("retains a payload-free compact boundary as raw-only degraded evidence", async () => {
+    const replay = await replayFixture(
+      "negative-minimal-compact-boundary.jsonl",
+    );
+
+    expect(replay.status).toBe("partial");
+    expect(replay.trajectoryEvidence).toBe("degraded");
+    expect(replay.diagnostics).toContainEqual({
+      code: "unvalidated-provider-notice-shape",
+      lineNumber: 2,
+      message:
+        "System notice subtype `compact_boundary` is retained raw until its exact schema-candidate shape is validated.",
+    });
+    expect(replay.rawRecords[1]?.value).toMatchObject({
+      subtype: "compact_boundary",
+      type: "system",
+    });
+    expect(
+      replay.events.some((event) => event.type === "provider_notice"),
+    ).toBe(false);
+    expect(replay.events.at(-1)?.type).toBe("adapter_completed");
+  });
+
+  test.each(["api_retry", "permission_denied", "task_progress"] as const)(
+    "applies raw-only degradation to the closest system notice variant %s",
+    async (systemNoticeSubtype) => {
+      const fixtureLines = (
+        await readReplayFixture("negative-minimal-compact-boundary.jsonl")
+      )
+        .trimEnd()
+        .split("\n");
+      const systemNotice = JSON.parse(fixtureLines[1] ?? "{}") as Record<
+        string,
+        unknown
+      >;
+      Reflect.set(systemNotice, "subtype", systemNoticeSubtype);
+      fixtureLines[1] = JSON.stringify(systemNotice);
+
+      const replay = replayClaudeCodeStream(`${fixtureLines.join("\n")}\n`, {
+        supportedClaudeCodeVersions: [SCHEMA_CANDIDATE_VERSION],
+      });
+
+      expect(replay.status).toBe("partial");
+      expect(replay.trajectoryEvidence).toBe("degraded");
+      expect(replay.diagnostics).toContainEqual({
+        code: "unvalidated-provider-notice-shape",
+        lineNumber: 2,
+        message: `System notice subtype \`${systemNoticeSubtype}\` is retained raw until its exact schema-candidate shape is validated.`,
+      });
+      expect(
+        replay.events.some((event) => event.type === "provider_notice"),
+      ).toBe(false);
+    },
+  );
+
   test("rejects a present terminal reason outside the exact schema-candidate domain", async () => {
     const replay = await replayFixture(
       "negative-invalid-terminal-reason.jsonl",

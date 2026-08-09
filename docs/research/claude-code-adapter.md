@@ -188,10 +188,11 @@ The `0.3.226` `SDKMessage` union also permits:
 
 These are an open, version-dependent surface. `RUN-04` should normalize only
 the ratified v1 meanings below. The replay spike preserves every recognized
-top-level notice raw-only and emits `unvalidated-provider-notice-shape`, making
-trajectory evidence degraded until that discriminator's full nested shape is
-pinned and validated. A known discriminator by itself is not coherent replay
-evidence; an unknown discriminator also degrades evidence. The
+provider notice raw-only, including allowlisted `system` subtypes, and emits
+`unvalidated-provider-notice-shape`, making trajectory evidence degraded until
+that discriminator's full nested shape is pinned and validated. A known
+discriminator plus UUID/session provenance is not coherent replay evidence by
+itself; an unknown discriminator also degrades evidence. The
 [SDK changelog](https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md)
 shows that result errors, status events, terminal reasons, task events, and
 stream behavior change across patch releases, supporting an exact-version
@@ -222,7 +223,9 @@ For schema candidate `2.1.226`, terminal subtypes are allowlisted exactly as
 subtypes use the exact inspected list above. An unknown system/result subtype
 remains in ordered raw records, emits a typed diagnostic, and cannot produce a
 complete replay. Known system notices must also retain their published UUID and
-session provenance. An unknown result subtype is not a terminal result.
+session provenance, but valid provenance does not make an otherwise
+unvalidated system payload complete: the record remains raw-only and degraded.
+An unknown result subtype is not a terminal result.
 
 A recognized terminal subtype is coherent only when its result counters and
 costs are finite and non-negative, token/request counters are non-negative
@@ -445,6 +448,7 @@ Fixtures live under
 | `negative-invalid-terminal-reason.jsonl` | result with a non-string termination reason |
 | `negative-malformed-assistant.jsonl` | assistant record with invalid message framing |
 | `negative-malformed-line.jsonl` | malformed JSON after a valid init prefix |
+| `negative-minimal-compact-boundary.jsonl` | compact-boundary subtype without required payload |
 | `negative-minimal-rate-limit-event.jsonl` | rate-limit discriminator without required payload |
 | `negative-minimal-stream-event.jsonl` | partial-assistant discriminator without required payload |
 | `negative-minimal-tool-progress.jsonl` | tool-progress discriminator without required payload |

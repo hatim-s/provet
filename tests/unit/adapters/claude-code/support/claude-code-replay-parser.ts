@@ -194,7 +194,7 @@ const KNOWN_TERMINAL_REASONS = new Set([
 // @anthropic-ai/claude-agent-sdk@0.3.226 declaration file. It is intentionally
 // version-pinned: additive future subtypes must degrade replay evidence until
 // reviewed rather than being treated as harmless notices.
-const KNOWN_SYSTEM_NOTICE_SUBTYPES = new Set([
+const RAW_ONLY_SYSTEM_NOTICE_SUBTYPES = new Set([
   "api_retry",
   "background_tasks_changed",
   "commands_changed",
@@ -446,6 +446,19 @@ function appendNormalizedEvent(
     sourceContentBlockIndex,
     sourceLineNumber,
     type,
+  });
+}
+
+/** Marks a recognized provider notice raw-only until its full shape is pinned. */
+function appendRawOnlyProviderNoticeDiagnostic(
+  diagnostics: ReplayDiagnostic[],
+  lineNumber: number,
+  providerNoticeLabel: string,
+): void {
+  diagnostics.push({
+    code: "unvalidated-provider-notice-shape",
+    lineNumber,
+    message: `${providerNoticeLabel} is retained raw until its exact schema-candidate shape is validated.`,
   });
 }
 
@@ -934,7 +947,7 @@ function replayClaudeCodeStream(
     if (parsedValue.type === "system") {
       if (
         typeof parsedValue.subtype !== "string" ||
-        !KNOWN_SYSTEM_NOTICE_SUBTYPES.has(parsedValue.subtype)
+        !RAW_ONLY_SYSTEM_NOTICE_SUBTYPES.has(parsedValue.subtype)
       ) {
         diagnostics.push({
           code: "unknown-system-subtype",
@@ -953,28 +966,20 @@ function replayClaudeCodeStream(
         return;
       }
 
-      appendNormalizedEvent(
-        events,
-        "provider_notice",
-        {
-          nativeSubtype:
-            typeof parsedValue.subtype === "string"
-              ? parsedValue.subtype
-              : null,
-          nativeType: parsedValue.type,
-        },
+      appendRawOnlyProviderNoticeDiagnostic(
+        diagnostics,
         lineNumber,
-        null,
+        `System notice subtype \`${parsedValue.subtype}\``,
       );
       return;
     }
 
     if (RAW_ONLY_PROVIDER_NOTICE_TYPES.has(parsedValue.type)) {
-      diagnostics.push({
-        code: "unvalidated-provider-notice-shape",
+      appendRawOnlyProviderNoticeDiagnostic(
+        diagnostics,
         lineNumber,
-        message: `Provider notice type \`${parsedValue.type}\` is retained raw until its exact schema-candidate shape is validated.`,
-      });
+        `Provider notice type \`${parsedValue.type}\``,
+      );
       return;
     }
 

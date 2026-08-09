@@ -64,6 +64,13 @@
       "isLiveCompatibilityEvidence": false
     },
     {
+      "file": "negative-minimal-compact-boundary.jsonl",
+      "sha256": "9fe1256d077a96d65c5bbcc31963f0d052896025b229db1e4333b77c07d5d248",
+      "scenario": "recognized compact-boundary system subtype without its required payload",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
       "file": "negative-minimal-rate-limit-event.jsonl",
       "sha256": "8ea3e46ed704d2259e410a3a6988eb227ddf3c889040e75f36e10f27a6ab44b1",
       "scenario": "recognized rate-limit discriminator without its required payload",
