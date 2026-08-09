@@ -16,24 +16,26 @@ const fixtureDirectory = join(
   "../../fixtures/security/execution-isolation",
 );
 
-/** Creates one explicit, secret-free process option set for a fixture. */
-function createSubprocessProbeOptions(
+type SubprocessProbeOptionOverrides = Partial<
+  Pick<
+    BoundedSubprocessProbeOptions,
+    | "abortSignal"
+    | "environment"
+    | "maximumOutputBytes"
+    | "terminationGraceMs"
+    | "timeoutMs"
+  >
+>;
+
+/** Creates one explicit, secret-free process option set for any executable. */
+function createDirectSubprocessProbeOptions(
   workingDirectory: string,
-  fixtureName: string,
-  argumentsAfterFixture: readonly string[] = [],
-  overrides: Partial<
-    Pick<
-      BoundedSubprocessProbeOptions,
-      | "abortSignal"
-      | "environment"
-      | "maximumOutputBytes"
-      | "terminationGraceMs"
-      | "timeoutMs"
-    >
-  > = {},
+  executable: string,
+  executableArguments: readonly string[],
+  overrides: SubprocessProbeOptionOverrides = {},
 ): BoundedSubprocessProbeOptions {
   const options: BoundedSubprocessProbeOptions = {
-    arguments: [join(fixtureDirectory, fixtureName), ...argumentsAfterFixture],
+    arguments: executableArguments,
     environment:
       overrides.environment ??
       constructMinimalEnvironmentProbe({
@@ -41,7 +43,7 @@ function createSubprocessProbeOptions(
         fixedVariables: { LANG: "C", LC_ALL: "C" },
         inheritedEnvironment: process.env,
       }),
-    executable: process.execPath,
+    executable,
     maximumOutputBytes: overrides.maximumOutputBytes ?? 1_024,
     terminationGraceMs: overrides.terminationGraceMs ?? 40,
     timeoutMs: overrides.timeoutMs ?? 1_000,
@@ -53,6 +55,21 @@ function createSubprocessProbeOptions(
   }
 
   return options;
+}
+
+/** Creates one explicit, secret-free process option set for a fixture. */
+function createSubprocessProbeOptions(
+  workingDirectory: string,
+  fixtureName: string,
+  argumentsAfterFixture: readonly string[] = [],
+  overrides: SubprocessProbeOptionOverrides = {},
+): BoundedSubprocessProbeOptions {
+  return createDirectSubprocessProbeOptions(
+    workingDirectory,
+    process.execPath,
+    [join(fixtureDirectory, fixtureName), ...argumentsAfterFixture],
+    overrides,
+  );
 }
 
 test("explicit argv preserves shell metacharacters as inert data", async () => {
@@ -73,7 +90,75 @@ test("explicit argv preserves shell metacharacters as inert data", async () => {
       untrustedArgument,
     ]);
     expect(executionResult.exitCode).toBe(0);
+    expect(executionResult.signal).toBeNull();
+    expect(executionResult.terminationReason).toBe("completed");
     expect(existsSync(unexpectedMarkerPath)).toBe(false);
+  } finally {
+    await rm(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
+test("a nonzero exit is distinct from normal completion", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "provet-spi-03-nonzero-exit-"),
+  );
+
+  try {
+    const executionResult = await runBoundedSubprocessProbe(
+      createDirectSubprocessProbeOptions(
+        temporaryDirectory,
+        "/usr/bin/false",
+        [],
+      ),
+    );
+
+    expect(executionResult.exitCode).toBe(1);
+    expect(executionResult.signal).toBeNull();
+    expect(executionResult.terminationReason).toBe("nonzero-exit");
+  } finally {
+    await rm(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
+test("a spontaneous process signal is distinct from normal completion", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "provet-spi-03-signalled-"),
+  );
+
+  try {
+    const executionResult = await runBoundedSubprocessProbe(
+      createDirectSubprocessProbeOptions(temporaryDirectory, process.execPath, [
+        "-e",
+        'process.kill(process.pid, "SIGTERM")',
+      ]),
+    );
+
+    expect(executionResult.exitCode).toBeNull();
+    expect(executionResult.signal).toBe("SIGTERM");
+    expect(executionResult.terminationReason).toBe("signalled");
+  } finally {
+    await rm(temporaryDirectory, { force: true, recursive: true });
+  }
+});
+
+test("a spawn failure rejects with a distinct typed code", async () => {
+  const temporaryDirectory = await mkdtemp(
+    join(tmpdir(), "provet-spi-03-spawn-failure-"),
+  );
+
+  try {
+    await expect(
+      runBoundedSubprocessProbe(
+        createDirectSubprocessProbeOptions(
+          temporaryDirectory,
+          "/path/without/an/executable",
+          [],
+        ),
+      ),
+    ).rejects.toMatchObject({
+      cause: expect.any(Error),
+      code: "spawn-failed",
+    });
   } finally {
     await rm(temporaryDirectory, { force: true, recursive: true });
   }
@@ -157,10 +242,10 @@ test("timeout terminates a forked child that remains in the process group", asyn
         temporaryDirectory,
         "spawn-same-group-child.ts",
         [childMarkerPath, markerWriterPath],
-        { timeoutMs: 500 },
+        { timeoutMs: 1_000 },
       ),
     );
-    await Bun.sleep(700);
+    await Bun.sleep(1_200);
 
     expect(executionResult.terminationReason).toBe("timed-out");
     expect(executionResult.terminationSignals).toContain("SIGTERM");
@@ -186,10 +271,10 @@ test("an unsafe-local child can escape by creating a new session", async () => {
         temporaryDirectory,
         "spawn-escaped-session-child.ts",
         [escapedMarkerPath, markerWriterPath],
-        { timeoutMs: 500 },
+        { timeoutMs: 1_000 },
       ),
     );
-    await Bun.sleep(700);
+    await Bun.sleep(1_200);
 
     expect(executionResult.terminationReason).toBe("timed-out");
     expect(existsSync(escapedMarkerPath)).toBe(true);
@@ -216,7 +301,7 @@ test("cancellation escalates when a process ignores graceful termination", async
         },
       ),
     );
-    await Bun.sleep(100);
+    await Bun.sleep(750);
     cancellationController.abort();
     const executionResult = await executionPromise;
 

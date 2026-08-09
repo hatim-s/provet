@@ -444,6 +444,9 @@ bun test tests/security
 | Threat | Probe | Observed result | Meaning |
 | --- | --- | --- | --- |
 | Shell injection | explicit argv metacharacters | marker absent; argument preserved | no shell interpretation in spike |
+| Nonzero exit | `/usr/bin/false` | nonzero-exit with exit code `1` | target failure is not completion |
+| Signal termination | process sends itself SIGTERM | signalled with `SIGTERM` | spontaneous signal is not completion |
+| Spawn failure | missing executable | typed `spawn-failed` rejection | pre-execution failure remains distinct |
 | Secret inheritance | synthetic ambient secret and `HOME` | both absent | explicit environment is minimal |
 | Huge output | 8 KiB producer, 512-byte combined bound | exactly 512 bytes retained; output-limit | capture is bounded |
 | Forked child | inherited process group | child marker absent after timeout | group termination reaches same-group child |

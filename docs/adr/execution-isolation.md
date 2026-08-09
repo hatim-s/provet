@@ -301,6 +301,7 @@ bun test tests/security
 ```
 
 The suite covers explicit argv, minimal environment, combined bounded capture,
+normal success, nonzero exit, spontaneous signal, typed spawn failure,
 same-group fork cleanup, new-session escape, timeout/cancellation and forced
 termination, traversal, outbound/internal symlinks, owner-only temp mode, and
 terminal controls. Detailed claims and exclusions are in the
