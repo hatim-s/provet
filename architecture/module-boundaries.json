@@ -19,20 +19,28 @@
     "application": ["application", "contracts"],
     "cli": ["application", "cli", "contracts"],
     "composition-root": [
+      "adapters",
       "application",
       "cli",
       "composition-root",
+      "config",
       "contracts",
-      "platform"
+      "evals",
+      "execution",
+      "graders",
+      "platform",
+      "reporting",
+      "runs",
+      "workspaces"
     ],
-    "config": ["config", "contracts"],
+    "config": ["application", "config", "contracts"],
     "contracts": ["contracts"],
-    "evals": ["contracts", "evals"],
+    "evals": ["application", "contracts", "evals"],
     "execution": ["application", "contracts", "execution"],
-    "graders": ["contracts", "graders"],
+    "graders": ["application", "contracts", "graders"],
     "package": ["cli", "contracts", "package"],
     "platform": ["application", "contracts", "platform"],
-    "reporting": ["contracts", "reporting"],
+    "reporting": ["application", "contracts", "reporting"],
     "runs": ["application", "contracts", "runs"],
     "workspaces": ["application", "contracts", "workspaces"]
   }

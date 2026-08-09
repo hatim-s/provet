@@ -104,6 +104,135 @@ async function readDeclaredNames(
   return declarationNames;
 }
 
+interface StructuralDeclaration {
+  name: string;
+  signature: string;
+}
+
+/** Canonicalizes one member so property order and formatting cannot hide a copy. */
+function readMemberSignature(
+  member: ts.TypeElement,
+  sourceFile: ts.SourceFile,
+): string {
+  if (ts.isPropertySignature(member)) {
+    const isReadonly = member.modifiers?.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
+    );
+    return [
+      "property",
+      isReadonly ? "readonly" : "mutable",
+      member.name.getText(sourceFile),
+      member.questionToken ? "optional" : "required",
+      member.type ? readTypeSignature(member.type, sourceFile) : "unknown",
+    ].join(":");
+  }
+
+  return member.getText(sourceFile).replace(/\s+/gu, "");
+}
+
+/** Canonicalizes structural type syntax while preserving referenced owner names. */
+function readTypeSignature(
+  typeNode: ts.TypeNode,
+  sourceFile: ts.SourceFile,
+): string {
+  if (ts.isTypeLiteralNode(typeNode)) {
+    return `{${typeNode.members
+      .map((member) => readMemberSignature(member, sourceFile))
+      .sort()
+      .join(";")}}`;
+  }
+  if (ts.isUnionTypeNode(typeNode) || ts.isIntersectionTypeNode(typeNode)) {
+    const operator = ts.isUnionTypeNode(typeNode) ? "union" : "intersection";
+    return `${operator}(${typeNode.types
+      .map((memberType) => readTypeSignature(memberType, sourceFile))
+      .sort()
+      .join(",")})`;
+  }
+  if (ts.isParenthesizedTypeNode(typeNode)) {
+    return readTypeSignature(typeNode.type, sourceFile);
+  }
+  if (ts.isArrayTypeNode(typeNode)) {
+    return `array(${readTypeSignature(typeNode.elementType, sourceFile)})`;
+  }
+
+  return typeNode.getText(sourceFile).replace(/\s+/gu, "");
+}
+
+/** Reads canonical signatures for top-level DTO interfaces and type aliases. */
+function readStructuralDeclarations(
+  sourcePath: string,
+  sourceText: string,
+): readonly StructuralDeclaration[] {
+  const sourceFile = ts.createSourceFile(
+    sourcePath,
+    sourceText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const structuralDeclarations: StructuralDeclaration[] = [];
+
+  for (const statement of sourceFile.statements) {
+    if (ts.isInterfaceDeclaration(statement)) {
+      structuralDeclarations.push({
+        name: statement.name.text,
+        signature: `interface(${statement.members
+          .map((member) => readMemberSignature(member, sourceFile))
+          .sort()
+          .join(";")})`,
+      });
+    } else if (ts.isTypeAliasDeclaration(statement)) {
+      structuralDeclarations.push({
+        name: statement.name.text,
+        signature: `type(${readTypeSignature(statement.type, sourceFile)})`,
+      });
+    }
+  }
+
+  return structuralDeclarations;
+}
+
+/** Loads the structural signatures that only their inventoried owner may declare. */
+async function readOwnedStructuralSignatures(): Promise<
+  ReadonlyMap<
+    string,
+    { readonly ownerPath: string; readonly symbolName: string }
+  >
+> {
+  const ownedSignatures = new Map<
+    string,
+    { readonly ownerPath: string; readonly symbolName: string }
+  >();
+
+  for (const contractEntry of PUBLIC_CONTRACT_INVENTORY) {
+    const ownerSourcePath = resolve(REPOSITORY_ROOT, contractEntry.sourcePath);
+    const structuralDeclarations = readStructuralDeclarations(
+      ownerSourcePath,
+      await readFile(ownerSourcePath, "utf8"),
+    );
+    for (const structuralDeclaration of structuralDeclarations) {
+      if (
+        !(contractEntry.exportedSymbols as readonly string[]).includes(
+          structuralDeclaration.name,
+        )
+      ) {
+        continue;
+      }
+
+      expect(
+        ownedSignatures.has(structuralDeclaration.signature),
+        `${structuralDeclaration.name} duplicates another inventoried shape.`,
+      ).toBe(false);
+      ownedSignatures.set(structuralDeclaration.signature, {
+        ownerPath: contractEntry.sourcePath,
+        symbolName: structuralDeclaration.name,
+      });
+    }
+  }
+
+  return ownedSignatures;
+}
+
 /** Forces an exhaustive compile-time decision for the closed adapter union. */
 function readAdapterKind(configuration: AdapterConfiguration): string {
   switch (configuration.type) {
@@ -220,6 +349,46 @@ describe("public contract inventory", () => {
         }
       }
     }
+  });
+
+  test("prohibits renamed structural copies of inventoried DTOs", async () => {
+    const ownedSignatures = await readOwnedStructuralSignatures();
+
+    for (const sourcePath of await listTypeScriptFiles(SOURCE_ROOT)) {
+      const repositoryRelativePath = relative(REPOSITORY_ROOT, sourcePath);
+      for (const structuralDeclaration of readStructuralDeclarations(
+        sourcePath,
+        await readFile(sourcePath, "utf8"),
+      )) {
+        const ownedSignature = ownedSignatures.get(
+          structuralDeclaration.signature,
+        );
+        if (ownedSignature) {
+          expect(
+            repositoryRelativePath,
+            `${structuralDeclaration.name} copies ${ownedSignature.symbolName}.`,
+          ).toBe(ownedSignature.ownerPath);
+        }
+      }
+    }
+  });
+
+  test("detects a hostile renamed and reordered measurement DTO copy", async () => {
+    const ownedSignatures = await readOwnedStructuralSignatures();
+    const [hostileDeclaration] = readStructuralDeclarations(
+      "src/adapters/alternate-invocation-measurements.ts",
+      `interface AlternateInvocationMeasurements {
+        tokens: TokenUsage | null;
+        cost: MonetaryAmount | null;
+        durationMs: number | null;
+      }`,
+    );
+
+    expect(hostileDeclaration).toBeDefined();
+    expect(ownedSignatures.get(hostileDeclaration?.signature ?? "")).toEqual({
+      ownerPath: "src/contracts/invocation/invocation-measurements.ts",
+      symbolName: "InvocationMeasurements",
+    });
   });
 
   test("keeps the human inventory synchronized with executable ownership", async () => {

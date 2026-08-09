@@ -11,11 +11,138 @@ interface AdapterProvenance {
   rawEventFormat: string;
 }
 
-/** Declares the target's upper capability bound without claiming host isolation. */
-interface TargetCapabilityGrant {
-  networkAccess: "configured-destination-only" | "none";
-  workspaceAccess: "none" | "read-only" | "read-write";
+type RequestedNetworkAccess =
+  | "configured-destination-only"
+  | "denied"
+  | "unrestricted";
+
+type RequestedWorkspaceAccess = "none" | "read-only" | "read-write";
+
+/** Names the known unsafe profile without pre-approving any stronger profile. */
+type ExecutionProfile =
+  | {
+      isolationEnforcement: "none";
+      type: "unsafe-local";
+    }
+  | {
+      isolationEnforcement: "unknown";
+      name: string;
+      type: "named";
+    }
+  | {
+      isolationEnforcement: "verified";
+      name: string;
+      type: "named";
+    };
+
+/** Keeps requested policy, observed enforcement, and effective network access distinct. */
+type NetworkCapabilityState =
+  | {
+      effectiveNetworkAccess: "configured-destination-only";
+      networkEnforcement: "enforced";
+      requestedNetworkAccess: "configured-destination-only";
+    }
+  | {
+      effectiveNetworkAccess: "denied";
+      networkEnforcement: "enforced";
+      requestedNetworkAccess: "denied";
+    }
+  | {
+      effectiveNetworkAccess: "unrestricted";
+      networkEnforcement: "not-required";
+      requestedNetworkAccess: "unrestricted";
+    }
+  | {
+      effectiveNetworkAccess: "unrestricted";
+      networkEnforcement: "unenforced";
+      requestedNetworkAccess: "unrestricted";
+    }
+  | {
+      effectiveNetworkAccess: "unknown";
+      networkEnforcement: "unknown";
+      requestedNetworkAccess: RequestedNetworkAccess;
+    };
+
+/** Keeps the logical workspace request separate from unenforced ambient host access. */
+type WorkspaceCapabilityState =
+  | {
+      effectiveWorkspaceAccess: RequestedWorkspaceAccess;
+      requestedWorkspaceAccess: RequestedWorkspaceAccess;
+      workspaceEnforcement: "enforced";
+    }
+  | {
+      effectiveWorkspaceAccess: "unrestricted";
+      requestedWorkspaceAccess: RequestedWorkspaceAccess;
+      workspaceEnforcement: "unenforced";
+    }
+  | {
+      effectiveWorkspaceAccess: "unknown";
+      requestedWorkspaceAccess: RequestedWorkspaceAccess;
+      workspaceEnforcement: "unknown";
+    };
+
+interface TargetCapabilityRequirement {
+  isolation: "none" | "required";
+  networkAccess: RequestedNetworkAccess;
+  workspaceAccess: RequestedWorkspaceAccess;
 }
+
+interface UnsafeLocalTargetCapabilityGrant {
+  executionProfile: Extract<ExecutionProfile, { type: "unsafe-local" }>;
+  network: Extract<
+    NetworkCapabilityState,
+    {
+      effectiveNetworkAccess: "unrestricted";
+      networkEnforcement: "unenforced";
+      requestedNetworkAccess: "unrestricted";
+    }
+  >;
+  workspace: Extract<
+    WorkspaceCapabilityState,
+    {
+      effectiveWorkspaceAccess: "unrestricted";
+      workspaceEnforcement: "unenforced";
+    }
+  >;
+}
+
+interface NamedProfileTargetCapabilityGrant {
+  executionProfile: Extract<
+    ExecutionProfile,
+    { isolationEnforcement: "verified"; type: "named" }
+  >;
+  network: Exclude<
+    NetworkCapabilityState,
+    { networkEnforcement: "unenforced" | "unknown" }
+  >;
+  workspace: Extract<
+    WorkspaceCapabilityState,
+    { workspaceEnforcement: "enforced" }
+  >;
+}
+
+/** Describes only a compatible, truthfully observed capability state. */
+type TargetCapabilityGrant =
+  | NamedProfileTargetCapabilityGrant
+  | UnsafeLocalTargetCapabilityGrant;
+
+/** Makes an unenforceable or unknown requirement a non-invokable planning result. */
+type TargetCapabilityCompatibility =
+  | {
+      compatible: false;
+      executionProfile: ExecutionProfile;
+      observedNetwork: NetworkCapabilityState;
+      observedWorkspace: WorkspaceCapabilityState;
+      reason:
+        | "isolation-unverified"
+        | "network-enforcement-unavailable"
+        | "workspace-enforcement-unavailable";
+      requirement: TargetCapabilityRequirement;
+    }
+  | {
+      compatible: true;
+      grant: TargetCapabilityGrant;
+    };
 
 interface TrialWorkspaceReference {
   path: string;
@@ -69,11 +196,16 @@ interface JudgeInvocationPort {
 export type {
   AdapterInvocationResult,
   AdapterProvenance,
+  ExecutionProfile,
   JudgeInvocationPort,
   JudgeInvocationRequest,
+  NetworkCapabilityState,
   RedactedJudgeEvidence,
+  TargetCapabilityCompatibility,
   TargetCapabilityGrant,
+  TargetCapabilityRequirement,
   TargetInvocationPort,
   TargetInvocationRequest,
   TrialWorkspaceReference,
+  WorkspaceCapabilityState,
 };

@@ -17,6 +17,7 @@ Public fields use these conventions:
 - durations end in `Ms` internally and in machine output; configuration timeouts end in `Seconds` at the config boundary and normalize once before invocation;
 - token counts are non-negative integers and monetary values always carry an explicit currency;
 - `null` means a semantically applicable value is unknown or unavailable;
+- an explicit `unknown` enum state means planning observed that a security capability is unverified; it is not interchangeable with `null`, `unrestricted`, or an enforced state;
 - an optional field means the field is not applicable to that variant; serialized contracts do not use `undefined` as data;
 - timestamps are ISO 8601 strings and ordering uses explicit sequence or plan order, never timestamps;
 - counts and one-based trial numbers are integers; ratios and scores use numbers within their documented bounds.
