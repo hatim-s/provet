@@ -13,4 +13,10 @@ The published [Provet Product Plan (v1)](https://hatim-s.github.io/planloft-plan
 - [CLI UX standard](./standards/cli-ux.md) — command grammar, machine streams, errors/exits, reporting, and diff semantics.
 - [Agent UX standard](./standards/agent-ux.md) — noninteractive authoring, schema/validation loop, safe writes, diagnostics, and conformance journey.
 
+## Repository operation
+
+- [Toolchain support](./TOOLCHAIN.md) — package manager, runtime, modules, TypeScript strictness, and supported host assumptions.
+- [Package scripts](./SCRIPTS.md) — authoritative commands for build and verification lanes.
+- [Environment contract](./ENV.md) — environment variables, secrets, and runtime bindings used by the repository.
+
 When documents disagree, stop implementation and resolve the conflict through the ADR/product-decision process in the repository standard. Do not infer that a researched recommendation has already amended the product plan.
