@@ -1,0 +1,39 @@
+{
+  "contractDomains": [
+    "cli",
+    "config",
+    "evals",
+    "events",
+    "execution",
+    "grading",
+    "invocation",
+    "persistence",
+    "reporting",
+    "versioning"
+  ],
+  "fileModules": {
+    "src/cli/vet-entrypoint.ts": "composition-root"
+  },
+  "modules": {
+    "adapters": ["adapters", "application", "contracts"],
+    "application": ["application", "contracts"],
+    "cli": ["application", "cli", "contracts"],
+    "composition-root": [
+      "application",
+      "cli",
+      "composition-root",
+      "contracts",
+      "platform"
+    ],
+    "config": ["config", "contracts"],
+    "contracts": ["contracts"],
+    "evals": ["contracts", "evals"],
+    "execution": ["application", "contracts", "execution"],
+    "graders": ["contracts", "graders"],
+    "package": ["cli", "contracts", "package"],
+    "platform": ["application", "contracts", "platform"],
+    "reporting": ["contracts", "reporting"],
+    "runs": ["application", "contracts", "runs"],
+    "workspaces": ["application", "contracts", "workspaces"]
+  }
+}
