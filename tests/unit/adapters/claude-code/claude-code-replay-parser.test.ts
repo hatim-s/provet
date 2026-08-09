@@ -296,6 +296,162 @@ describe("Claude Code replay parser spike", () => {
     });
   });
 
+  test("degrades malformed assistant framing while preserving the raw record", async () => {
+    const replay = await replayFixture("negative-malformed-assistant.jsonl");
+
+    expect(replay.status).toBe("partial");
+    expect(replay.trajectoryEvidence).toBe("degraded");
+    expect(replay.diagnostics).toContainEqual({
+      code: "invalid-assistant-message-shape",
+      lineNumber: 2,
+      message:
+        "The assistant record is missing required message or provenance framing.",
+    });
+    expect(replay.rawRecords[1]?.value).toMatchObject({
+      message: { content: "not-an-array" },
+      type: "assistant",
+    });
+    expect(replay.events.at(-1)?.type).toBe("adapter_completed");
+  });
+
+  test("degrades an unknown user content block without silently discarding it", async () => {
+    const replay = await replayFixture("negative-unknown-user-block.jsonl");
+
+    expect(replay.status).toBe("partial");
+    expect(replay.trajectoryEvidence).toBe("degraded");
+    expect(replay.diagnostics).toContainEqual({
+      code: "unknown-content-block",
+      lineNumber: 2,
+      message: "User content block type `future_user_block` is not recognized.",
+    });
+    expect(replay.rawRecords[1]?.value).toMatchObject({
+      message: { content: [{ type: "future_user_block" }] },
+      type: "user",
+    });
+  });
+
+  test("preserves duplicate tool-call cardinality when only one result arrives", async () => {
+    const replay = await replayFixture("negative-duplicate-tool-id.jsonl");
+    const toolEvents = replay.events.filter((event) =>
+      event.type.startsWith("tool_call_"),
+    );
+
+    expect(replay.status).toBe("partial");
+    expect(replay.trajectoryEvidence).toBe("degraded");
+    expect(replay.diagnostics).toContainEqual({
+      code: "duplicate-tool-call",
+      lineNumber: 2,
+      message:
+        "Tool call identifier `tool_fixture_duplicate` is already pending.",
+    });
+    expect(replay.diagnostics).toContainEqual({
+      code: "unterminated-tool-call",
+      lineNumber: null,
+      message: "Tool call `tool_fixture_duplicate` has no result record.",
+    });
+    expect(
+      toolEvents.map((event) => [
+        event.type,
+        event.data.toolCallId,
+        event.sourceContentBlockIndex,
+      ]),
+    ).toEqual([
+      ["tool_call_started", "tool_fixture_duplicate", 0],
+      ["tool_call_started", "tool_fixture_duplicate", 1],
+      ["tool_call_completed", "tool_fixture_duplicate", 0],
+    ]);
+  });
+
+  test("rejects malformed nested terminal accounting and permission fields", async () => {
+    const replay = await replayFixture("negative-invalid-nested-result.jsonl");
+
+    expect(replay.status).toBe("partial");
+    expect(replay.trajectoryEvidence).toBe("degraded");
+    expect(replay.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "invalid-result-shape",
+      "missing-terminal-result",
+    ]);
+    expect(replay.rawRecords[2]?.value).toMatchObject({
+      modelUsage: { "claude-schema-candidate": {} },
+      permission_denials: [null],
+      subtype: "success",
+      usage: {},
+    });
+    expect(
+      replay.events.some(
+        (event) =>
+          event.type === "adapter_completed" || event.type === "usage_reported",
+      ),
+    ).toBe(false);
+  });
+
+  test.each([
+    [
+      "main-agent token counter",
+      (terminalResult: Record<string, unknown>) => {
+        const usage = Reflect.get(terminalResult, "usage") as object;
+        Reflect.set(usage, "output_tokens", -1);
+      },
+    ],
+    [
+      "per-model cost",
+      (terminalResult: Record<string, unknown>) => {
+        const modelUsage = Reflect.get(terminalResult, "modelUsage") as Record<
+          string,
+          Record<string, unknown>
+        >;
+        const schemaCandidateUsage = modelUsage["claude-fixture-model"];
+        if (schemaCandidateUsage !== undefined) {
+          Reflect.set(schemaCandidateUsage, "costUSD", -0.01);
+        }
+      },
+    ],
+    [
+      "permission denial element",
+      (terminalResult: Record<string, unknown>) => {
+        Reflect.set(terminalResult, "permission_denials", [
+          {
+            tool_input: "not-an-object",
+            tool_name: "Read",
+            tool_use_id: "tool_fixture_denial",
+          },
+        ]);
+      },
+    ],
+  ] as const)(
+    "rejects an invalid nested %s without terminal normalization",
+    async (_fieldDescription, makeNestedFieldInvalid) => {
+      const fixtureLines = (
+        await readReplayFixture("schema-derived-text.jsonl")
+      )
+        .trimEnd()
+        .split("\n");
+      const invalidResult = JSON.parse(fixtureLines[2] ?? "{}") as Record<
+        string,
+        unknown
+      >;
+      makeNestedFieldInvalid(invalidResult);
+      fixtureLines[2] = JSON.stringify(invalidResult);
+
+      const replay = replayClaudeCodeStream(`${fixtureLines.join("\n")}\n`, {
+        supportedClaudeCodeVersions: [SCHEMA_CANDIDATE_VERSION],
+      });
+
+      expect(replay.status).toBe("partial");
+      expect(replay.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+        "invalid-result-shape",
+        "missing-terminal-result",
+      ]);
+      expect(
+        replay.events.some(
+          (event) =>
+            event.type === "adapter_completed" ||
+            event.type === "usage_reported",
+        ),
+      ).toBe(false);
+    },
+  );
+
   test("rejects a stream before normalization when the init version drifts", async () => {
     const replay = await replayFixture("negative-unsupported-version.jsonl");
 

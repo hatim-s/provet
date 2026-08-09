@@ -1,15 +1,22 @@
 interface JsonObject {
   [key: string]: unknown;
   apiKeySource?: unknown;
+  cache_creation_input_tokens?: unknown;
+  cache_read_input_tokens?: unknown;
   claude_code_version?: unknown;
   content?: unknown;
+  costUSD?: unknown;
+  contextWindow?: unknown;
   cwd?: unknown;
+  data?: unknown;
   duration_api_ms?: unknown;
   duration_ms?: unknown;
   error?: unknown;
   errors?: unknown;
   id?: unknown;
   input?: unknown;
+  input_tokens?: unknown;
+  inputTokens?: unknown;
   is_error?: unknown;
   isError?: unknown;
   message?: unknown;
@@ -19,18 +26,28 @@ interface JsonObject {
   name?: unknown;
   num_turns?: unknown;
   output_style?: unknown;
+  output_tokens?: unknown;
+  outputTokens?: unknown;
   parent_tool_use_id?: unknown;
   permissionMode?: unknown;
   permission_denials?: unknown;
   plugins?: unknown;
   result?: unknown;
+  role?: unknown;
+  server_tool_use?: unknown;
+  service_tier?: unknown;
+  signature?: unknown;
   stop_reason?: unknown;
+  stop_sequence?: unknown;
   subtype?: unknown;
   session_id?: unknown;
   skills?: unknown;
   slash_commands?: unknown;
   terminal_reason?: unknown;
   text?: unknown;
+  thinking?: unknown;
+  tool_input?: unknown;
+  tool_name?: unknown;
   tool_use_id?: unknown;
   tool_use_result?: unknown;
   toolCallId?: unknown;
@@ -39,13 +56,23 @@ interface JsonObject {
   type?: unknown;
   usage?: unknown;
   uuid?: unknown;
+  web_fetch_requests?: unknown;
+  web_search_requests?: unknown;
+  webSearchRequests?: unknown;
+  cacheCreationInputTokens?: unknown;
+  cacheReadInputTokens?: unknown;
+  maxOutputTokens?: unknown;
 }
 
 type ReplayDiagnosticCode =
+  | "duplicate-tool-call"
   | "duplicate-init"
+  | "invalid-assistant-message-shape"
+  | "invalid-content-block"
   | "invalid-init-shape"
   | "invalid-result-shape"
   | "invalid-system-shape"
+  | "invalid-user-message-shape"
   | "malformed-json"
   | "missing-init"
   | "missing-terminal-result"
@@ -179,11 +206,127 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
 
+/** Returns true for finite counters or costs that cannot be negative. */
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return isFiniteNumber(value) && value >= 0;
+}
+
+/** Returns true for finite integer counters that cannot be negative. */
+function isNonNegativeInteger(value: unknown): value is number {
+  return isNonNegativeFiniteNumber(value) && Number.isInteger(value);
+}
+
 /** Validates provenance fields shared by published system notice records. */
 function hasMessageProvenance(nativeEvent: JsonObject): boolean {
   return (
     typeof nativeEvent.uuid === "string" &&
     typeof nativeEvent.session_id === "string"
+  );
+}
+
+/** Validates the required token counters shared by assistant and result usage. */
+function hasCoreTokenUsageShape(usage: unknown): usage is JsonObject {
+  return (
+    isJsonObject(usage) &&
+    isNonNegativeInteger(usage.input_tokens) &&
+    isNonNegativeInteger(usage.cache_creation_input_tokens) &&
+    isNonNegativeInteger(usage.cache_read_input_tokens) &&
+    isNonNegativeInteger(usage.output_tokens)
+  );
+}
+
+/** Validates the pinned assistant message envelope before mapping its blocks. */
+function hasValidAssistantMessageShape(nativeEvent: JsonObject): boolean {
+  const message = nativeEvent.message;
+
+  return (
+    isJsonObject(message) &&
+    typeof message.id === "string" &&
+    message.type === "message" &&
+    message.role === "assistant" &&
+    typeof message.model === "string" &&
+    Array.isArray(message.content) &&
+    (typeof message.stop_reason === "string" || message.stop_reason === null) &&
+    (typeof message.stop_sequence === "string" ||
+      message.stop_sequence === null) &&
+    hasCoreTokenUsageShape(message.usage) &&
+    (typeof nativeEvent.parent_tool_use_id === "string" ||
+      nativeEvent.parent_tool_use_id === null) &&
+    hasMessageProvenance(nativeEvent)
+  );
+}
+
+/** Validates the pinned user message envelope before mapping its blocks. */
+function hasValidUserMessageShape(nativeEvent: JsonObject): boolean {
+  const message = nativeEvent.message;
+
+  return (
+    isJsonObject(message) &&
+    message.role === "user" &&
+    Array.isArray(message.content) &&
+    (typeof nativeEvent.parent_tool_use_id === "string" ||
+      nativeEvent.parent_tool_use_id === null) &&
+    (nativeEvent.uuid === undefined || typeof nativeEvent.uuid === "string") &&
+    (nativeEvent.session_id === undefined ||
+      typeof nativeEvent.session_id === "string")
+  );
+}
+
+/** Validates the pinned cumulative result usage object recursively. */
+function hasValidResultUsageShape(usage: unknown): boolean {
+  if (!hasCoreTokenUsageShape(usage)) {
+    return false;
+  }
+
+  const serverToolUse = usage.server_tool_use;
+  return (
+    isJsonObject(serverToolUse) &&
+    isNonNegativeInteger(serverToolUse.web_search_requests) &&
+    isNonNegativeInteger(serverToolUse.web_fetch_requests) &&
+    typeof usage.service_tier === "string" &&
+    usage.service_tier.length > 0
+  );
+}
+
+/** Validates one pinned ModelUsage entry including counters and USD estimate. */
+function hasValidModelUsageEntry(modelUsage: unknown): boolean {
+  return (
+    isJsonObject(modelUsage) &&
+    isNonNegativeInteger(modelUsage.inputTokens) &&
+    isNonNegativeInteger(modelUsage.outputTokens) &&
+    isNonNegativeInteger(modelUsage.cacheReadInputTokens) &&
+    isNonNegativeInteger(modelUsage.cacheCreationInputTokens) &&
+    isNonNegativeInteger(modelUsage.webSearchRequests) &&
+    isNonNegativeFiniteNumber(modelUsage.costUSD) &&
+    isNonNegativeInteger(modelUsage.contextWindow) &&
+    isNonNegativeInteger(modelUsage.maxOutputTokens)
+  );
+}
+
+/** Validates every per-model cumulative usage entry under its native model key. */
+function hasValidModelUsageShape(modelUsage: unknown): boolean {
+  return (
+    isJsonObject(modelUsage) &&
+    Object.entries(modelUsage).every(
+      ([modelName, usage]) =>
+        modelName.length > 0 && hasValidModelUsageEntry(usage),
+    )
+  );
+}
+
+/** Validates every terminal permission denial against the pinned SDK shape. */
+function hasValidPermissionDenialsShape(permissionDenials: unknown): boolean {
+  return (
+    Array.isArray(permissionDenials) &&
+    permissionDenials.every(
+      (permissionDenial) =>
+        isJsonObject(permissionDenial) &&
+        typeof permissionDenial.tool_name === "string" &&
+        permissionDenial.tool_name.length > 0 &&
+        typeof permissionDenial.tool_use_id === "string" &&
+        permissionDenial.tool_use_id.length > 0 &&
+        isJsonObject(permissionDenial.tool_input),
+    )
   );
 }
 
@@ -214,18 +357,18 @@ function hasValidResultShape(nativeEvent: JsonObject): boolean {
   if (
     typeof nativeEvent.subtype !== "string" ||
     !KNOWN_RESULT_SUBTYPES.has(nativeEvent.subtype) ||
-    !isFiniteNumber(nativeEvent.duration_ms) ||
-    !isFiniteNumber(nativeEvent.duration_api_ms) ||
+    !isNonNegativeFiniteNumber(nativeEvent.duration_ms) ||
+    !isNonNegativeFiniteNumber(nativeEvent.duration_api_ms) ||
     typeof nativeEvent.is_error !== "boolean" ||
-    !isFiniteNumber(nativeEvent.num_turns) ||
-    !isFiniteNumber(nativeEvent.total_cost_usd) ||
+    !isNonNegativeInteger(nativeEvent.num_turns) ||
+    !isNonNegativeFiniteNumber(nativeEvent.total_cost_usd) ||
     !(
       typeof nativeEvent.stop_reason === "string" ||
       nativeEvent.stop_reason === null
     ) ||
-    !isJsonObject(nativeEvent.usage) ||
-    !isJsonObject(nativeEvent.modelUsage) ||
-    !Array.isArray(nativeEvent.permission_denials) ||
+    !hasValidResultUsageShape(nativeEvent.usage) ||
+    !hasValidModelUsageShape(nativeEvent.modelUsage) ||
+    !hasValidPermissionDenialsShape(nativeEvent.permission_denials) ||
     typeof nativeEvent.uuid !== "string" ||
     typeof nativeEvent.session_id !== "string"
   ) {
@@ -238,7 +381,11 @@ function hasValidResultShape(nativeEvent: JsonObject): boolean {
     );
   }
 
-  return nativeEvent.is_error === true && Array.isArray(nativeEvent.errors);
+  return (
+    nativeEvent.is_error === true &&
+    Array.isArray(nativeEvent.errors) &&
+    nativeEvent.errors.every((error) => typeof error === "string")
+  );
 }
 
 /** Reads the message content array without assuming an Anthropic SDK type. */
@@ -275,7 +422,7 @@ function mapAssistantEvent(
   lineNumber: number,
   events: ProposedNormalizedEvent[],
   diagnostics: ReplayDiagnostic[],
-  pendingToolCallIdentifiers: Set<string>,
+  pendingToolCallCounts: Map<string, number>,
 ): void {
   if (typeof nativeEvent.error === "string") {
     appendNormalizedEvent(
@@ -299,7 +446,16 @@ function mapAssistantEvent(
       return;
     }
 
-    if (contentBlock.type === "text" && typeof contentBlock.text === "string") {
+    if (contentBlock.type === "text") {
+      if (typeof contentBlock.text !== "string") {
+        diagnostics.push({
+          code: "invalid-content-block",
+          lineNumber,
+          message: `Assistant text block ${contentBlockIndex} has no string text field.`,
+        });
+        return;
+      }
+
       appendNormalizedEvent(
         events,
         "assistant_text",
@@ -316,17 +472,37 @@ function mapAssistantEvent(
       return;
     }
 
-    if (
-      contentBlock.type === "tool_use" &&
-      typeof contentBlock.id === "string" &&
-      typeof contentBlock.name === "string"
-    ) {
-      pendingToolCallIdentifiers.add(contentBlock.id);
+    if (contentBlock.type === "tool_use") {
+      if (
+        typeof contentBlock.id !== "string" ||
+        contentBlock.id.length === 0 ||
+        typeof contentBlock.name !== "string" ||
+        contentBlock.name.length === 0 ||
+        !isJsonObject(contentBlock.input)
+      ) {
+        diagnostics.push({
+          code: "invalid-content-block",
+          lineNumber,
+          message: `Assistant tool_use block ${contentBlockIndex} is missing its id, name, or object input.`,
+        });
+        return;
+      }
+
+      const pendingToolCallCount =
+        pendingToolCallCounts.get(contentBlock.id) ?? 0;
+      if (pendingToolCallCount > 0) {
+        diagnostics.push({
+          code: "duplicate-tool-call",
+          lineNumber,
+          message: `Tool call identifier \`${contentBlock.id}\` is already pending.`,
+        });
+      }
+      pendingToolCallCounts.set(contentBlock.id, pendingToolCallCount + 1);
       appendNormalizedEvent(
         events,
         "tool_call_started",
         {
-          input: isJsonObject(contentBlock.input) ? contentBlock.input : {},
+          input: contentBlock.input,
           name: contentBlock.name,
           parentToolUseId:
             typeof nativeEvent.parent_tool_use_id === "string"
@@ -340,18 +516,38 @@ function mapAssistantEvent(
       return;
     }
 
-    // Thinking and redacted-thinking blocks are intentionally retained raw but
-    // do not become v1 trajectory events. Other block types signal drift.
-    if (
-      contentBlock.type !== "thinking" &&
-      contentBlock.type !== "redacted_thinking"
-    ) {
-      diagnostics.push({
-        code: "unknown-content-block",
-        lineNumber,
-        message: `Assistant content block type \`${contentBlock.type}\` is not mapped.`,
-      });
+    // Thinking blocks remain raw-only, but their pinned required fields still
+    // need validation so malformed native bytes cannot look lossless.
+    if (contentBlock.type === "thinking") {
+      if (
+        typeof contentBlock.thinking !== "string" ||
+        typeof contentBlock.signature !== "string"
+      ) {
+        diagnostics.push({
+          code: "invalid-content-block",
+          lineNumber,
+          message: `Assistant thinking block ${contentBlockIndex} is missing thinking or signature text.`,
+        });
+      }
+      return;
     }
+
+    if (contentBlock.type === "redacted_thinking") {
+      if (typeof contentBlock.data !== "string") {
+        diagnostics.push({
+          code: "invalid-content-block",
+          lineNumber,
+          message: `Assistant redacted_thinking block ${contentBlockIndex} has no string data field.`,
+        });
+      }
+      return;
+    }
+
+    diagnostics.push({
+      code: "unknown-content-block",
+      lineNumber,
+      message: `Assistant content block type \`${contentBlock.type}\` is not recognized.`,
+    });
   });
 }
 
@@ -361,23 +557,67 @@ function mapUserEvent(
   lineNumber: number,
   events: ProposedNormalizedEvent[],
   diagnostics: ReplayDiagnostic[],
-  pendingToolCallIdentifiers: Set<string>,
+  pendingToolCallCounts: Map<string, number>,
 ): void {
   readMessageContent(nativeEvent).forEach((contentBlock, contentBlockIndex) => {
-    if (
-      !isJsonObject(contentBlock) ||
-      contentBlock.type !== "tool_result" ||
-      typeof contentBlock.tool_use_id !== "string"
-    ) {
+    if (!isJsonObject(contentBlock) || typeof contentBlock.type !== "string") {
+      diagnostics.push({
+        code: "unknown-content-block",
+        lineNumber,
+        message: `User content block ${contentBlockIndex} has no supported discriminator.`,
+      });
       return;
     }
 
-    if (!pendingToolCallIdentifiers.delete(contentBlock.tool_use_id)) {
+    if (contentBlock.type === "text") {
+      if (typeof contentBlock.text !== "string") {
+        diagnostics.push({
+          code: "invalid-content-block",
+          lineNumber,
+          message: `User text block ${contentBlockIndex} has no string text field.`,
+        });
+      }
+      return;
+    }
+
+    if (contentBlock.type !== "tool_result") {
+      diagnostics.push({
+        code: "unknown-content-block",
+        lineNumber,
+        message: `User content block type \`${contentBlock.type}\` is not recognized.`,
+      });
+      return;
+    }
+
+    if (
+      typeof contentBlock.tool_use_id !== "string" ||
+      contentBlock.tool_use_id.length === 0 ||
+      (contentBlock.is_error !== undefined &&
+        typeof contentBlock.is_error !== "boolean")
+    ) {
+      diagnostics.push({
+        code: "invalid-content-block",
+        lineNumber,
+        message: `User tool_result block ${contentBlockIndex} has an invalid tool identifier or error flag.`,
+      });
+      return;
+    }
+
+    const pendingToolCallCount =
+      pendingToolCallCounts.get(contentBlock.tool_use_id) ?? 0;
+    if (pendingToolCallCount === 0) {
       diagnostics.push({
         code: "tool-result-without-call",
         lineNumber,
         message: `Tool result \`${contentBlock.tool_use_id}\` has no prior tool call.`,
       });
+    } else if (pendingToolCallCount === 1) {
+      pendingToolCallCounts.delete(contentBlock.tool_use_id);
+    } else {
+      pendingToolCallCounts.set(
+        contentBlock.tool_use_id,
+        pendingToolCallCount - 1,
+      );
     }
 
     appendNormalizedEvent(
@@ -456,7 +696,7 @@ function replayClaudeCodeStream(
 ): ClaudeCodeReplay {
   const diagnostics: ReplayDiagnostic[] = [];
   const events: ProposedNormalizedEvent[] = [];
-  const pendingToolCallIdentifiers = new Set<string>();
+  const pendingToolCallCounts = new Map<string, number>();
   const rawRecords: RawReplayRecord[] = [];
   let hasSeenInitRecord = false;
   let hasTerminalResult = false;
@@ -590,23 +830,42 @@ function replayClaudeCodeStream(
     }
 
     if (parsedValue.type === "assistant") {
+      if (!hasValidAssistantMessageShape(parsedValue)) {
+        diagnostics.push({
+          code: "invalid-assistant-message-shape",
+          lineNumber,
+          message:
+            "The assistant record is missing required message or provenance framing.",
+        });
+        return;
+      }
+
       mapAssistantEvent(
         parsedValue,
         lineNumber,
         events,
         diagnostics,
-        pendingToolCallIdentifiers,
+        pendingToolCallCounts,
       );
       return;
     }
 
     if (parsedValue.type === "user") {
+      if (!hasValidUserMessageShape(parsedValue)) {
+        diagnostics.push({
+          code: "invalid-user-message-shape",
+          lineNumber,
+          message: "The user record is missing required message framing.",
+        });
+        return;
+      }
+
       mapUserEvent(
         parsedValue,
         lineNumber,
         events,
         diagnostics,
-        pendingToolCallIdentifiers,
+        pendingToolCallCounts,
       );
       return;
     }
@@ -713,11 +972,17 @@ function replayClaudeCodeStream(
     });
   }
 
-  for (const toolCallIdentifier of pendingToolCallIdentifiers) {
+  for (const [
+    toolCallIdentifier,
+    pendingToolCallCount,
+  ] of pendingToolCallCounts) {
     diagnostics.push({
       code: "unterminated-tool-call",
       lineNumber: null,
-      message: `Tool call \`${toolCallIdentifier}\` has no result record.`,
+      message:
+        pendingToolCallCount === 1
+          ? `Tool call \`${toolCallIdentifier}\` has no result record.`
+          : `Tool call \`${toolCallIdentifier}\` has ${pendingToolCallCount} unresolved result records.`,
     });
   }
 

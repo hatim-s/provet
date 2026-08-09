@@ -29,9 +29,30 @@
   ],
   "fixtures": [
     {
+      "file": "negative-duplicate-tool-id.jsonl",
+      "sha256": "a35a678146d2876e8501c5fff536c5af45cedcd905cbd47b29c69cd29b9c24f2",
+      "scenario": "duplicate pending tool identifier with one matching result",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-invalid-nested-result.jsonl",
+      "sha256": "6dd6d2e03d2ecc25093df9bf206673203186a40f32b477cae39d2c716d9b552b",
+      "scenario": "terminal result with invalid usage, model usage, and permission denial shapes",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
       "file": "negative-malformed-line.jsonl",
       "sha256": "fe4c0d5ebcdb76285ff4fa028b1c23c884498f4c7cffb56b7b5b9f46e1b791b1",
       "scenario": "malformed JSONL record",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-malformed-assistant.jsonl",
+      "sha256": "21419b6fae90ab7cb2a9dccf17d86fb40ee12ec97dacf4eff09b31d286f941c0",
+      "scenario": "assistant message with a non-array content field",
       "evidenceClass": "negative-synthetic",
       "isLiveCompatibilityEvidence": false
     },
@@ -67,6 +88,13 @@
       "file": "negative-unknown-system-subtype.jsonl",
       "sha256": "f49767d172ef04ea7c3c0494cb55be98f05d016926ea089ca2c74561eaf0b6e3",
       "scenario": "unknown system notice subtype before a coherent result",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-unknown-user-block.jsonl",
+      "sha256": "fd4cb38de3e6cd7bf9d0d13751939ae8326356a84e2a4ce0edb6d293d66d1d0c",
+      "scenario": "user message with an unknown content block discriminator",
       "evidenceClass": "negative-synthetic",
       "isLiveCompatibilityEvidence": false
     },

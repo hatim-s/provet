@@ -124,13 +124,19 @@ and the
 
 The v1 adapter needs these blocks:
 
-- `text`: normalize to assistant text with native line and content index.
-- `tool_use`: normalize `id`, `name`, and object `input`; retain the raw block.
+- The assistant envelope must retain its published message ID/type/role/model,
+  array content, stop fields, non-negative integer token counters, parent-tool
+  framing, UUID, and session provenance. Invalid framing stays raw and degrades
+  the trajectory.
+- `text`: require string `text`; normalize to assistant text with native line
+  and content index.
+- `tool_use`: require non-empty `id`/`name` and object `input`; normalize those
+  fields and retain the raw block.
 - `thinking` and `redacted_thinking`: retain only in sanitized raw evidence.
-  They are not v1 semantic trajectory events and must not be printed or used by
-  graders.
+  Require their pinned string fields even though they are not v1 semantic
+  trajectory events and must not be printed or used by graders.
 - Unknown blocks: preserve raw, mark protocol drift, and make trajectory
-  evidence unavailable. Do not silently discard them.
+  evidence degraded after valid framing. Do not silently discard them.
 
 A single assistant content array may contain multiple `tool_use` blocks.
 Preserve their array order and correlate results by identifier. Multiple blocks
@@ -151,6 +157,17 @@ tool-specific structured output. Proposed precedence is:
    not invent a stable shape for it.
 4. Map `is_error: true` to a failed tool call, not automatically to a failed
    adapter invocation. Claude may recover and emit `result/success`.
+
+The replay spike requires an object user message with role `user`, array
+content, and null/string parent-tool framing. It recognizes string `text` as
+raw-only user content and validates every `tool_result` identifier/error flag.
+Every other user content discriminator is retained raw and degrades the
+trajectory until separately reviewed.
+
+Pending tool calls use counted identifier correlation, not set membership. A
+duplicate `tool_use.id` emits `duplicate-tool-call`, both ordered start events
+remain present, and each result consumes exactly one pending occurrence. The
+remaining count determines unterminated-call diagnostics at stream end.
 
 ### Optional and version-dependent records
 
@@ -191,6 +208,11 @@ result shape is the only transition into `terminal`; records after it are
 protocol drift. An unsupported init version enters a separate `unsupported`
 state before any proposed normalized event is emitted.
 
+Assistant and user records are validated before content mapping. Every content
+block is either recognized with its required pinned fields or produces an
+invalid/unknown block diagnostic; an empty mapping is never used to conceal a
+malformed known record.
+
 For schema candidate `2.1.226`, terminal subtypes are allowlisted exactly as
 `success`, `error_during_execution`, `error_max_turns`,
 `error_max_budget_usd`, and `error_max_structured_output_retries`. System notice
@@ -198,6 +220,14 @@ subtypes use the exact inspected list above. An unknown system/result subtype
 remains in ordered raw records, emits a typed diagnostic, and cannot produce a
 complete replay. Known system notices must also retain their published UUID and
 session provenance. An unknown result subtype is not a terminal result.
+
+A recognized terminal subtype is coherent only when its result counters and
+costs are finite and non-negative, token/request counters are non-negative
+integers, `usage.server_tool_use` and every `modelUsage` entry contain their
+required pinned fields, each `permission_denials` entry contains string tool
+identity plus object input, and error-result entries are strings. Invalid
+nested evidence remains in its raw result record but cannot emit normalized
+usage or terminal completion.
 
 Replay output records the observed version, its `system/init` line, the
 candidate-version list supplied to the test, and the evidence class. It always
@@ -279,6 +309,9 @@ parse init -> assistant/user records -> result
         +--> missing/duplicate/invalid init -----> partial; evidence unavailable
         +--> unknown version --------------------> unsupported (no billed run)
         +--> malformed/unknown/missing result ---> partial + protocol error
+        +--> malformed assistant/user framing ---> partial + raw preservation
+        +--> duplicate tool identifier ----------> partial + counted correlation
+        +--> invalid nested usage/permissions ----> partial + no terminal mapping
         +--> unknown system/result subtype ------> partial + raw preservation
         +--> unmatched tool call/result ---------> partial trajectory
         +--> result/error_* ---------------------> complete failed invocation
@@ -306,10 +339,12 @@ A stream is partial when any of these holds:
   not match its required shape;
 - stdout contains malformed JSON or a non-object record;
 - a native discriminator, system/result subtype, or content block is unknown;
+- an assistant/user envelope or recognized content block is malformed;
 - a known terminal subtype does not match its required result shape;
 - no terminal result is observed;
 - a record follows a coherent terminal result;
 - a tool result has no prior tool call;
+- a tool-call identifier is duplicated while pending;
 - a tool call has no result when the stream terminates;
 - the process exits or is killed before coherent terminal capture;
 - capture truncation/overflow occurs.
@@ -392,8 +427,15 @@ Fixtures live under
 | `schema-derived-provider-error.jsonl` | assistant provider error followed by terminal failure |
 | `schema-derived-cancellation.jsonl` | aborted tool plus terminal error; intentionally partial tool trajectory |
 | `schema-derived-workspace-edit.jsonl` | edit intent without fabricated filesystem proof |
+| `negative-duplicate-tool-id.jsonl` | duplicate pending tool identifier with one matching result |
+| `negative-invalid-nested-result.jsonl` | invalid terminal usage/model/permission structures |
+| `negative-malformed-assistant.jsonl` | assistant record with invalid message framing |
 | `negative-malformed-line.jsonl` | malformed JSON after a valid init prefix |
+| `negative-missing-init.jsonl` | terminal result without required init/version framing |
 | `negative-unknown-event.jsonl` | unknown event despite a later success result |
+| `negative-unknown-result-subtype.jsonl` | unknown additive result subtype |
+| `negative-unknown-system-subtype.jsonl` | unknown additive system subtype |
+| `negative-unknown-user-block.jsonl` | unknown additive user content discriminator |
 | `negative-partial-trajectory.jsonl` | EOF before a result |
 | `negative-unsupported-version.jsonl` | exact-version rejection |
 
