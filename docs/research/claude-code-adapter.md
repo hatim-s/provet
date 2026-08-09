@@ -187,8 +187,11 @@ The `0.3.226` `SDKMessage` union also permits:
   `rate_limit_event`, `prompt_suggestion`, and `conversation_reset` records.
 
 These are an open, version-dependent surface. `RUN-04` should normalize only
-the ratified v1 meanings below, preserve all recognized notices raw, and treat
-an unknown discriminator as degraded evidence. The
+the ratified v1 meanings below. The replay spike preserves every recognized
+top-level notice raw-only and emits `unvalidated-provider-notice-shape`, making
+trajectory evidence degraded until that discriminator's full nested shape is
+pinned and validated. A known discriminator by itself is not coherent replay
+evidence; an unknown discriminator also degrades evidence. The
 [SDK changelog](https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md)
 shows that result errors, status events, terminal reasons, task events, and
 stream behavior change across patch releases, supporting an exact-version
@@ -228,6 +231,16 @@ required pinned fields, each `permission_denials` entry contains string tool
 identity plus object input, and error-result entries are strings. Invalid
 nested evidence remains in its raw result record but cannot emit normalized
 usage or terminal completion.
+
+When present, `terminal_reason` must be one of the exact `0.3.226` union:
+`blocking_limit`, `rapid_refill_breaker`, `prompt_too_long`, `image_error`,
+`model_error`, `api_error`, `malformed_tool_use_exhausted`,
+`aborted_streaming`, `aborted_tools`, `stop_hook_prevented`, `hook_stopped`,
+`tool_deferred`, `max_turns`, `background_requested`, `completed`,
+`budget_exhausted`, `structured_output_retry_exhausted`,
+`tool_deferred_unavailable`, or `turn_setup_failed`. A non-string or future
+string member is schema-candidate drift: retain the raw result, emit
+`invalid-result-shape`, and do not normalize it as terminal.
 
 Replay output records the observed version, its `system/init` line, the
 candidate-version list supplied to the test, and the evidence class. It always
@@ -429,8 +442,12 @@ Fixtures live under
 | `schema-derived-workspace-edit.jsonl` | edit intent without fabricated filesystem proof |
 | `negative-duplicate-tool-id.jsonl` | duplicate pending tool identifier with one matching result |
 | `negative-invalid-nested-result.jsonl` | invalid terminal usage/model/permission structures |
+| `negative-invalid-terminal-reason.jsonl` | result with a non-string termination reason |
 | `negative-malformed-assistant.jsonl` | assistant record with invalid message framing |
 | `negative-malformed-line.jsonl` | malformed JSON after a valid init prefix |
+| `negative-minimal-rate-limit-event.jsonl` | rate-limit discriminator without required payload |
+| `negative-minimal-stream-event.jsonl` | partial-assistant discriminator without required payload |
+| `negative-minimal-tool-progress.jsonl` | tool-progress discriminator without required payload |
 | `negative-missing-init.jsonl` | terminal result without required init/version framing |
 | `negative-unknown-event.jsonl` | unknown event despite a later success result |
 | `negative-unknown-result-subtype.jsonl` | unknown additive result subtype |

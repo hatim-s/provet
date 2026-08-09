@@ -43,6 +43,13 @@
       "isLiveCompatibilityEvidence": false
     },
     {
+      "file": "negative-invalid-terminal-reason.jsonl",
+      "sha256": "1d3355b83b6f1e0e8689ae266a225aa5e5da7dfd43e9b24a806e2a95e74efff7",
+      "scenario": "terminal result with a non-string termination reason",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
       "file": "negative-malformed-line.jsonl",
       "sha256": "fe4c0d5ebcdb76285ff4fa028b1c23c884498f4c7cffb56b7b5b9f46e1b791b1",
       "scenario": "malformed JSONL record",
@@ -53,6 +60,27 @@
       "file": "negative-malformed-assistant.jsonl",
       "sha256": "21419b6fae90ab7cb2a9dccf17d86fb40ee12ec97dacf4eff09b31d286f941c0",
       "scenario": "assistant message with a non-array content field",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-minimal-rate-limit-event.jsonl",
+      "sha256": "8ea3e46ed704d2259e410a3a6988eb227ddf3c889040e75f36e10f27a6ab44b1",
+      "scenario": "recognized rate-limit discriminator without its required payload",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-minimal-stream-event.jsonl",
+      "sha256": "2db3e9232b26ba7535d1844b57b1746a5dd0c0b6dbf1c6f163037b5ea4990643",
+      "scenario": "recognized partial-assistant discriminator without its required payload",
+      "evidenceClass": "negative-synthetic",
+      "isLiveCompatibilityEvidence": false
+    },
+    {
+      "file": "negative-minimal-tool-progress.jsonl",
+      "sha256": "d07313ca2dc8ad36dcc355ca96556613274eaabb95b165d8bbb15f504f919326",
+      "scenario": "recognized tool-progress discriminator without its required payload",
       "evidenceClass": "negative-synthetic",
       "isLiveCompatibilityEvidence": false
     },

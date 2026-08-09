@@ -78,6 +78,7 @@ type ReplayDiagnosticCode =
   | "missing-terminal-result"
   | "record-after-terminal"
   | "tool-result-without-call"
+  | "unvalidated-provider-notice-shape"
   | "unknown-content-block"
   | "unknown-event"
   | "unknown-result-subtype"
@@ -144,7 +145,10 @@ type ReplayStreamState =
   | "terminal"
   | "unsupported";
 
-const KNOWN_PROVIDER_NOTICE_TYPES = new Set([
+// These top-level SDK union members are recognized but deliberately remain
+// raw-only until each complete nested shape is pinned and validated. A known
+// discriminator alone is not sufficient evidence for lossless replay.
+const RAW_ONLY_PROVIDER_NOTICE_TYPES = new Set([
   "auth_status",
   "conversation_reset",
   "prompt_suggestion",
@@ -160,6 +164,30 @@ const KNOWN_RESULT_SUBTYPES = new Set([
   "error_max_structured_output_retries",
   "error_max_turns",
   "success",
+]);
+
+// Exact TerminalReason union from @anthropic-ai/claude-agent-sdk@0.3.226.
+// A future string member is protocol drift until the candidate is reviewed.
+const KNOWN_TERMINAL_REASONS = new Set([
+  "aborted_streaming",
+  "aborted_tools",
+  "api_error",
+  "background_requested",
+  "blocking_limit",
+  "budget_exhausted",
+  "completed",
+  "hook_stopped",
+  "image_error",
+  "malformed_tool_use_exhausted",
+  "max_turns",
+  "model_error",
+  "prompt_too_long",
+  "rapid_refill_breaker",
+  "stop_hook_prevented",
+  "structured_output_retry_exhausted",
+  "tool_deferred",
+  "tool_deferred_unavailable",
+  "turn_setup_failed",
 ]);
 
 // This exact set comes from the SDKMessage union in the inspected
@@ -369,6 +397,11 @@ function hasValidResultShape(nativeEvent: JsonObject): boolean {
     !hasValidResultUsageShape(nativeEvent.usage) ||
     !hasValidModelUsageShape(nativeEvent.modelUsage) ||
     !hasValidPermissionDenialsShape(nativeEvent.permission_denials) ||
+    !(
+      nativeEvent.terminal_reason === undefined ||
+      (typeof nativeEvent.terminal_reason === "string" &&
+        KNOWN_TERMINAL_REASONS.has(nativeEvent.terminal_reason))
+    ) ||
     typeof nativeEvent.uuid !== "string" ||
     typeof nativeEvent.session_id !== "string"
   ) {
@@ -936,14 +969,12 @@ function replayClaudeCodeStream(
       return;
     }
 
-    if (KNOWN_PROVIDER_NOTICE_TYPES.has(parsedValue.type)) {
-      appendNormalizedEvent(
-        events,
-        "provider_notice",
-        { nativeSubtype: null, nativeType: parsedValue.type },
+    if (RAW_ONLY_PROVIDER_NOTICE_TYPES.has(parsedValue.type)) {
+      diagnostics.push({
+        code: "unvalidated-provider-notice-shape",
         lineNumber,
-        null,
-      );
+        message: `Provider notice type \`${parsedValue.type}\` is retained raw until its exact schema-candidate shape is validated.`,
+      });
       return;
     }
 

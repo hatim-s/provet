@@ -452,6 +452,54 @@ describe("Claude Code replay parser spike", () => {
     },
   );
 
+  test.each([
+    ["negative-minimal-rate-limit-event.jsonl", "rate_limit_event"],
+    ["negative-minimal-tool-progress.jsonl", "tool_progress"],
+    ["negative-minimal-stream-event.jsonl", "stream_event"],
+  ] as const)(
+    "retains unvalidated provider notice %s as raw-only degraded evidence",
+    async (fixtureName, providerNoticeType) => {
+      const replay = await replayFixture(fixtureName);
+
+      expect(replay.status).toBe("partial");
+      expect(replay.trajectoryEvidence).toBe("degraded");
+      expect(replay.diagnostics).toContainEqual({
+        code: "unvalidated-provider-notice-shape",
+        lineNumber: 2,
+        message: `Provider notice type \`${providerNoticeType}\` is retained raw until its exact schema-candidate shape is validated.`,
+      });
+      expect(replay.rawRecords[1]?.value).toEqual({ type: providerNoticeType });
+      expect(
+        replay.events.some((event) => event.type === "provider_notice"),
+      ).toBe(false);
+      expect(replay.events.at(-1)?.type).toBe("adapter_completed");
+    },
+  );
+
+  test("rejects a present terminal reason outside the exact schema-candidate domain", async () => {
+    const replay = await replayFixture(
+      "negative-invalid-terminal-reason.jsonl",
+    );
+
+    expect(replay.status).toBe("partial");
+    expect(replay.trajectoryEvidence).toBe("degraded");
+    expect(replay.diagnostics.map((diagnostic) => diagnostic.code)).toEqual([
+      "invalid-result-shape",
+      "missing-terminal-result",
+    ]);
+    expect(replay.rawRecords[2]?.value).toMatchObject({
+      subtype: "success",
+      terminal_reason: 42,
+      type: "result",
+    });
+    expect(
+      replay.events.some(
+        (event) =>
+          event.type === "adapter_completed" || event.type === "usage_reported",
+      ),
+    ).toBe(false);
+  });
+
   test("rejects a stream before normalization when the init version drifts", async () => {
     const replay = await replayFixture("negative-unsupported-version.jsonl");
 
