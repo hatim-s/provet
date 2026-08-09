@@ -13,13 +13,49 @@ interface CodexStreamReplay {
   isTrajectoryComplete: boolean;
   malformedLineNumber: number | null;
   openItemIdentifiers: string[];
+  protocolDiagnostics: CodexProtocolDiagnostic[];
   unknownEventTypes: string[];
   unknownItemTypes: string[];
 }
 
+type CodexProtocolDiagnosticCode =
+  | "duplicate-event"
+  | "duplicate-item-completion"
+  | "duplicate-item-start"
+  | "event-out-of-order"
+  | "item-type-mismatch"
+  | "malformed-event-shape"
+  | "malformed-item-shape"
+  | "terminal-with-open-items"
+  | "unmatched-item-completion";
+
+interface CodexProtocolDiagnostic {
+  code: CodexProtocolDiagnosticCode;
+  eventType: string;
+  itemIdentifier?: string;
+  lineNumber: number;
+}
+
+type CodexReplayPhase =
+  | "awaiting-thread-start"
+  | "awaiting-turn-start"
+  | "in-turn"
+  | "terminal";
+
+interface CodexReplayLifecycle {
+  activeItemTypes: Map<string, string>;
+  completedItemIdentifiers: Set<string>;
+  hasThreadStarted: boolean;
+  hasTurnStarted: boolean;
+  phase: CodexReplayPhase;
+  protocolDiagnostics: CodexProtocolDiagnostic[];
+}
+
 interface NativeCodexEvent extends Record<string, unknown> {
   item?: unknown;
+  thread_id?: unknown;
   type: string;
+  usage?: unknown;
 }
 
 interface NativeCodexItem extends Record<string, unknown> {
@@ -78,10 +114,197 @@ function isEvidencedItemType(itemType: string): boolean {
   return evidencedItemTypes.has(itemType);
 }
 
+/** Records a replay diagnostic without removing the offending raw event. */
+function addProtocolDiagnostic(
+  lifecycle: CodexReplayLifecycle,
+  code: CodexProtocolDiagnosticCode,
+  eventType: string,
+  lineNumber: number,
+  itemIdentifier?: string,
+): void {
+  lifecycle.protocolDiagnostics.push({
+    code,
+    eventType,
+    ...(itemIdentifier === undefined ? {} : { itemIdentifier }),
+    lineNumber,
+  });
+}
+
+/** Validates the minimum live-evidenced framing and item lifecycle for one event. */
+function validateCodexLifecycleEvent(
+  event: NativeCodexEvent,
+  lineNumber: number,
+  lifecycle: CodexReplayLifecycle,
+): void {
+  if (event.type === "thread.started") {
+    if (typeof event.thread_id !== "string") {
+      addProtocolDiagnostic(
+        lifecycle,
+        "malformed-event-shape",
+        event.type,
+        lineNumber,
+      );
+      return;
+    }
+    if (lifecycle.phase !== "awaiting-thread-start") {
+      addProtocolDiagnostic(
+        lifecycle,
+        lifecycle.hasThreadStarted ? "duplicate-event" : "event-out-of-order",
+        event.type,
+        lineNumber,
+      );
+      return;
+    }
+
+    lifecycle.hasThreadStarted = true;
+    lifecycle.phase = "awaiting-turn-start";
+    return;
+  }
+
+  if (event.type === "turn.started") {
+    if (lifecycle.phase !== "awaiting-turn-start") {
+      addProtocolDiagnostic(
+        lifecycle,
+        lifecycle.hasTurnStarted ? "duplicate-event" : "event-out-of-order",
+        event.type,
+        lineNumber,
+      );
+      return;
+    }
+
+    lifecycle.hasTurnStarted = true;
+    lifecycle.phase = "in-turn";
+    return;
+  }
+
+  if (event.type === "turn.completed") {
+    if (!isObjectRecord(event.usage)) {
+      addProtocolDiagnostic(
+        lifecycle,
+        "malformed-event-shape",
+        event.type,
+        lineNumber,
+      );
+    }
+    if (lifecycle.phase !== "in-turn") {
+      addProtocolDiagnostic(
+        lifecycle,
+        lifecycle.phase === "terminal"
+          ? "duplicate-event"
+          : "event-out-of-order",
+        event.type,
+        lineNumber,
+      );
+      return;
+    }
+    if (lifecycle.activeItemTypes.size > 0) {
+      addProtocolDiagnostic(
+        lifecycle,
+        "terminal-with-open-items",
+        event.type,
+        lineNumber,
+      );
+    }
+
+    lifecycle.phase = "terminal";
+    return;
+  }
+
+  const item = event.item;
+  if (!isNativeCodexItem(item)) {
+    addProtocolDiagnostic(
+      lifecycle,
+      "malformed-item-shape",
+      event.type,
+      lineNumber,
+    );
+    return;
+  }
+  if (lifecycle.phase !== "in-turn") {
+    addProtocolDiagnostic(
+      lifecycle,
+      "event-out-of-order",
+      event.type,
+      lineNumber,
+      item.id,
+    );
+    return;
+  }
+
+  if (event.type === "item.started") {
+    if (
+      lifecycle.activeItemTypes.has(item.id) ||
+      lifecycle.completedItemIdentifiers.has(item.id)
+    ) {
+      addProtocolDiagnostic(
+        lifecycle,
+        "duplicate-item-start",
+        event.type,
+        lineNumber,
+        item.id,
+      );
+      return;
+    }
+
+    lifecycle.activeItemTypes.set(item.id, item.type);
+    return;
+  }
+
+  const activeItemType = lifecycle.activeItemTypes.get(item.id);
+  if (activeItemType !== undefined) {
+    if (activeItemType !== item.type) {
+      addProtocolDiagnostic(
+        lifecycle,
+        "item-type-mismatch",
+        event.type,
+        lineNumber,
+        item.id,
+      );
+      return;
+    }
+
+    lifecycle.activeItemTypes.delete(item.id);
+    lifecycle.completedItemIdentifiers.add(item.id);
+    return;
+  }
+
+  if (lifecycle.completedItemIdentifiers.has(item.id)) {
+    addProtocolDiagnostic(
+      lifecycle,
+      "duplicate-item-completion",
+      event.type,
+      lineNumber,
+      item.id,
+    );
+    return;
+  }
+
+  // The live capture establishes agent messages as atomic completed items.
+  if (item.type === "agent_message") {
+    lifecycle.completedItemIdentifiers.add(item.id);
+    return;
+  }
+
+  addProtocolDiagnostic(
+    lifecycle,
+    "unmatched-item-completion",
+    event.type,
+    lineNumber,
+    item.id,
+  );
+}
+
 /** Replays JSONL without discarding raw lines, unknown events, or an incomplete prefix. */
 function replayCodexJsonLines(jsonLines: string): CodexStreamReplay {
   const events: ReplayedCodexEvent[] = [];
-  const openItemIdentifiers = new Set<string>();
+  const lifecycle: CodexReplayLifecycle = {
+    activeItemTypes: new Map(),
+    completedItemIdentifiers: new Set(),
+    hasThreadStarted: false,
+    hasTurnStarted: false,
+    phase: "awaiting-thread-start",
+    protocolDiagnostics: [],
+  };
   const unknownEventTypes = new Set<string>();
   const unknownItemTypes = new Set<string>();
   let malformedLineNumber: number | null = null;
@@ -108,17 +331,14 @@ function replayCodexJsonLines(jsonLines: string): CodexStreamReplay {
     events.push({ rawLine, value: parsedValue });
     if (!isEvidencedEventType(parsedValue.type)) {
       unknownEventTypes.add(parsedValue.type);
+    } else {
+      validateCodexLifecycleEvent(parsedValue, lineIndex + 1, lifecycle);
     }
 
     const item = parsedValue.item;
     if (isNativeCodexItem(item)) {
       if (!isEvidencedItemType(item.type)) {
         unknownItemTypes.add(item.type);
-      }
-      if (parsedValue.type === "item.started") {
-        openItemIdentifiers.add(item.id);
-      } else if (parsedValue.type === "item.completed") {
-        openItemIdentifiers.delete(item.id);
       }
     }
   }
@@ -133,11 +353,13 @@ function replayCodexJsonLines(jsonLines: string): CodexStreamReplay {
     isTrajectoryComplete:
       isTerminal &&
       malformedLineNumber === null &&
-      openItemIdentifiers.size === 0 &&
+      lifecycle.activeItemTypes.size === 0 &&
+      lifecycle.protocolDiagnostics.length === 0 &&
       unknownEventTypes.size === 0 &&
       unknownItemTypes.size === 0,
     malformedLineNumber,
-    openItemIdentifiers: [...openItemIdentifiers],
+    openItemIdentifiers: [...lifecycle.activeItemTypes.keys()],
+    protocolDiagnostics: lifecycle.protocolDiagnostics,
     unknownEventTypes: [...unknownEventTypes],
     unknownItemTypes: [...unknownItemTypes],
   };
@@ -155,6 +377,7 @@ describe("Codex JSONL replay spike", () => {
     expect(replay.isTerminal).toBe(true);
     expect(replay.isTrajectoryComplete).toBe(true);
     expect(replay.openItemIdentifiers).toEqual([]);
+    expect(replay.protocolDiagnostics).toEqual([]);
     expect(replay.unknownEventTypes).toEqual([]);
     expect(replay.unknownItemTypes).toEqual([]);
     expect(replay.events.map(({ value }) => value.type)).toEqual([
@@ -209,6 +432,92 @@ describe("Codex JSONL replay spike", () => {
     expect(replay.isTerminal).toBe(false);
     expect(replay.isTrajectoryComplete).toBe(false);
     expect(replay.openItemIdentifiers).toEqual(["item_0"]);
+  });
+
+  test("rejects a terminal-only stream as reordered framing", async () => {
+    const stdout = await readFile(
+      resolve(fixtureRoot, "synthetic-negative/terminal-only.jsonl"),
+      "utf8",
+    );
+    const replay = replayCodexJsonLines(stdout);
+
+    expect(replay.isTerminal).toBe(true);
+    expect(replay.isTrajectoryComplete).toBe(false);
+    expect(replay.protocolDiagnostics).toEqual([
+      {
+        code: "event-out-of-order",
+        eventType: "turn.completed",
+        lineNumber: 1,
+      },
+    ]);
+    expect(replay.events).toHaveLength(1);
+    expect(replay.events[0]?.rawLine).toBe(
+      '{"type":"turn.completed","usage":{}}',
+    );
+  });
+
+  test("retains and diagnoses an item start without an identifier", async () => {
+    const stdout = await readFile(
+      resolve(fixtureRoot, "synthetic-negative/missing-item-identifier.jsonl"),
+      "utf8",
+    );
+    const replay = replayCodexJsonLines(stdout);
+
+    expect(replay.isTerminal).toBe(true);
+    expect(replay.isTrajectoryComplete).toBe(false);
+    expect(replay.protocolDiagnostics).toEqual([
+      {
+        code: "malformed-item-shape",
+        eventType: "item.started",
+        lineNumber: 3,
+      },
+    ]);
+    expect(replay.events[2]?.rawLine).toContain(
+      '"item":{"type":"command_execution"',
+    );
+  });
+
+  test("retains and diagnoses an unmatched item completion", async () => {
+    const stdout = await readFile(
+      resolve(
+        fixtureRoot,
+        "synthetic-negative/unmatched-item-completion.jsonl",
+      ),
+      "utf8",
+    );
+    const replay = replayCodexJsonLines(stdout);
+
+    expect(replay.isTerminal).toBe(true);
+    expect(replay.isTrajectoryComplete).toBe(false);
+    expect(replay.protocolDiagnostics).toEqual([
+      {
+        code: "unmatched-item-completion",
+        eventType: "item.completed",
+        itemIdentifier: "never-started",
+        lineNumber: 3,
+      },
+    ]);
+    expect(replay.events[2]?.rawLine).toContain('"id":"never-started"');
+  });
+
+  test("retains and diagnoses a duplicate item start", async () => {
+    const stdout = await readFile(
+      resolve(fixtureRoot, "synthetic-negative/duplicate-item-start.jsonl"),
+      "utf8",
+    );
+    const replay = replayCodexJsonLines(stdout);
+
+    expect(replay.isTerminal).toBe(true);
+    expect(replay.isTrajectoryComplete).toBe(false);
+    expect(replay.protocolDiagnostics).toEqual([
+      {
+        code: "duplicate-item-start",
+        eventType: "item.started",
+        itemIdentifier: "item_duplicate",
+        lineNumber: 4,
+      },
+    ]);
+    expect(replay.events[3]?.rawLine).toContain('"id":"item_duplicate"');
   });
 
   test("retains additive unknown events while completing the known stream", async () => {

@@ -13,6 +13,7 @@ manifest was captured, so this fixture proves file presence after invocation,
 not that Codex added or changed the file.
 
 The `synthetic-negative` family exists only to exercise replay degradation for
-malformed, partial, additive unknown, hostile family-member, and unknown item
-discriminator JSONL. Synthetic files must never be reported as proof of live
-Codex behavior.
+malformed JSON, partial streams, invalid lifecycle framing, malformed known
+items, duplicate or unmatched item records, additive unknown events, hostile
+family members, and unknown item discriminators. Synthetic files must never be
+reported as proof of live Codex behavior.

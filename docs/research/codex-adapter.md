@@ -182,21 +182,27 @@ rules:
 3. On EOF without `turn.completed` or `turn.failed`, retain open item IDs, mark
    the trajectory partial, and fail protocol completion even when the process
    exit is `0`.
-4. Enumerate only exact evidenced top-level event types and item discriminators.
+4. Validate the minimum evidenced lifecycle before claiming completeness:
+   `thread.started`, then `turn.started`, matched command item starts and
+   completions, atomic completed agent messages, then a terminal record.
+   Malformed shapes, reordered or duplicate records, unmatched completions, and
+   terminals with open items remain in the raw replay with line-addressed
+   diagnostics and force completeness false.
+5. Enumerate only exact evidenced top-level event types and item discriminators.
    Retain unknown records verbatim, including new members under familiar
    `turn.*` and `item.*` prefixes, and mark trajectory completeness degraded.
    Unknown data may be ignored only for a consumer that can prove it is
    irrelevant; trajectory graders must not receive a silent completeness claim.
-5. A terminal event and process termination are jointly authoritative. An
+6. A terminal event and process termination are jointly authoritative. An
    `error` event is evidence, not by itself proof that no later terminal record
    exists. A non-zero exit remains invocation failure even if a terminal prefix
    was parsed.
-6. Preserve stdout, stderr, exit, signal, version, and workspace evidence as
+7. Preserve stdout, stderr, exit, signal, version, and workspace evidence as
    separate channels. Redaction occurs before any shareable persistence.
 
-The malformed, partial, and unknown-event streams are synthetic and labelled as
-such in provenance. They verify deterministic parser behavior, not provider
-compatibility.
+The malformed, partial, lifecycle-hostile, and unknown-event streams are
+synthetic and labelled as such in provenance. They verify deterministic parser
+behavior, not provider compatibility.
 
 ## Supported-version policy
 
@@ -232,6 +238,7 @@ an incidental parser choice.
 | Workspace after-state file presence | Live hashed after-state only | Not authoritative evidence of an addition or modification; RUN-06 must produce tied pre/post evidence. |
 | Parse-time CLI error | Live local validation | Support zero-event non-zero exit. |
 | Malformed/partial JSONL | Synthetic negative | Fail protocol with retained prefix; not live compatibility. |
+| Malformed/reordered known records | Synthetic negative | Retain raw records, diagnose invalid framing or item lifecycle, and keep completeness false; not live compatibility. |
 | Additive unknown event or item discriminator | Synthetic negative | Retain raw, record the unsupported discriminator, and degrade completeness even under familiar prefixes. |
 | Approval request/denial | Not exercised | Unsupported/unknown; no mapping may be claimed. |
 | Cancellation/signals | Not exercised | Unsupported/unknown; supervisor evidence must be captured before support. |
@@ -245,10 +252,10 @@ an incidental parser choice.
 
 The owned tests provide three independent gates:
 
-- replay tests prove raw-order retention, item lifecycle, final message, usage,
-  separate stderr/exit/workspace after-state evidence, malformed-line reporting,
-  partial open-item retention, and hostile unknown event/item preservation with
-  degraded completeness;
+- replay tests prove raw-order retention, framed item lifecycle, final message,
+  usage, separate stderr/exit/workspace after-state evidence, malformed-line
+  reporting, partial open-item retention, line-addressed lifecycle diagnostics,
+  and hostile unknown event/item preservation with degraded completeness;
 - provenance contract tests verify source classification and SHA-256 of every
   manifest-owned fixture byte;
 - secret-scan contract tests reject credential-shaped values, private keys,

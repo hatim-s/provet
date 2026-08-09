@@ -94,7 +94,7 @@
       "id": "synthetic-negative",
       "source": "synthetic",
       "providerInvocation": false,
-      "purpose": "deterministic malformed, partial, and additive-unknown replay probes only",
+      "purpose": "deterministic malformed, partial, lifecycle-hostile, and additive-unknown replay probes only",
       "files": [
         {
           "path": "synthetic-negative/malformed.jsonl",
@@ -115,6 +115,22 @@
         {
           "path": "synthetic-negative/unknown-item-type.jsonl",
           "sha256": "30a731520e48b19ec2918ea86977289d98d43c043a812cea3b481bd5d5aecaf7"
+        },
+        {
+          "path": "synthetic-negative/terminal-only.jsonl",
+          "sha256": "9599e15d12e67236dc2ece01bed61effdb59b7633d04b45e026905fbea69d510"
+        },
+        {
+          "path": "synthetic-negative/missing-item-identifier.jsonl",
+          "sha256": "1540f6d883c21070db7c80bad7433fa730ae3ee598e4f55f2db2b74a508ee904"
+        },
+        {
+          "path": "synthetic-negative/unmatched-item-completion.jsonl",
+          "sha256": "f82b8a74a8073506eabaec0a52c8f440073a7f961717638bd4f03f29e494038e"
+        },
+        {
+          "path": "synthetic-negative/duplicate-item-start.jsonl",
+          "sha256": "a63ece899fbed62dc7a81f5c2a86dd76272f46d445b726c368f4b11cd1840685"
         }
       ]
     }
