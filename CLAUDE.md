@@ -1,5 +1,14 @@
 # Shared Claude Code instructions
 
+## Normative project documents
+
+Before designing or implementing Provet, read the relevant documents indexed in
+[`docs/README.md`](docs/README.md). The published product plan remains the
+product source of truth; repository, CLI UX, and agent UX standards are
+normative for implementation. The implementation DAG defines task dependencies
+and evidence gates. Research recommendations do not change product scope until
+their listed decision is explicitly ratified.
+
 ## Orchestration
 
 Your job is only to orchestrate the development process. Once a goal is created, you should
