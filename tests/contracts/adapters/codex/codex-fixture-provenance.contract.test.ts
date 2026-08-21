@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -35,7 +34,7 @@ const fixtureRoot = resolve(
 
 /** Calculates the persisted-byte digest recorded by the provenance manifest. */
 function calculateSha256(fileBytes: Uint8Array): string {
-  return createHash("sha256").update(fileBytes).digest("hex");
+  return new Bun.CryptoHasher("sha256").update(fileBytes).digest("hex");
 }
 
 test("every Codex fixture has source provenance and stable bytes", async () => {

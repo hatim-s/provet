@@ -38,14 +38,13 @@ test("a clean package installs an executable vet binary", async () => {
     const consumerDirectory = join(temporaryDirectory, "consumer");
     const packageSourceDirectory = join(temporaryDirectory, "package-source");
     const packageTarballPath = join(temporaryDirectory, "provet-0.1.0.tgz");
-    const packageStorePath = join(temporaryDirectory, "pnpm-store");
     await mkdir(consumerDirectory, { recursive: true });
     await mkdir(packageSourceDirectory, { recursive: true });
     await Promise.all([
       cp(join(REPOSITORY_ROOT, "src"), join(packageSourceDirectory, "src"), {
         recursive: true,
       }),
-      ...["package.json", "pnpm-lock.yaml", "tsconfig.json"].map((fileName) =>
+      ...["package.json", "bun.lock", "tsconfig.json"].map((fileName) =>
         cp(
           join(REPOSITORY_ROOT, fileName),
           join(packageSourceDirectory, fileName),
@@ -54,7 +53,7 @@ test("a clean package installs an executable vet binary", async () => {
     ]);
 
     const packExecution = await executeCommand(
-      ["pnpm", "pack", "--pack-destination", temporaryDirectory],
+      ["bun", "pm", "pack", "--destination", temporaryDirectory],
       packageSourceDirectory,
     );
     expect(packExecution.exitCode).toBe(0);
@@ -75,7 +74,7 @@ test("a clean package installs an executable vet binary", async () => {
       "utf8",
     );
     const installExecution = await executeCommand(
-      ["pnpm", "install", "--offline", "--store-dir", packageStorePath],
+      ["bun", "install", "--offline"],
       consumerDirectory,
     );
     expect(installExecution.exitCode).toBe(0);

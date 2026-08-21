@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, test } from "bun:test";
@@ -39,7 +38,7 @@ async function readProvenanceManifest(): Promise<FixtureProvenanceManifest> {
 /** Computes the stable SHA-256 digest recorded for one sanitized fixture. */
 async function hashFixture(fixtureName: string): Promise<string> {
   const fixtureBytes = await readFile(resolve(FIXTURE_DIRECTORY, fixtureName));
-  return createHash("sha256").update(fixtureBytes).digest("hex");
+  return new Bun.CryptoHasher("sha256").update(fixtureBytes).digest("hex");
 }
 
 describe("Claude Code fixture provenance", () => {
