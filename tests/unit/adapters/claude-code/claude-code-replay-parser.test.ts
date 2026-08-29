@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { replayClaudeCodeStream } from "./support/claude-code-replay-parser.js";
@@ -12,7 +11,7 @@ const SCHEMA_CANDIDATE_VERSION = "2.1.226";
 
 /** Reads one immutable replay fixture as raw UTF-8 JSONL bytes. */
 async function readReplayFixture(fixtureName: string): Promise<string> {
-  return readFile(resolve(FIXTURE_DIRECTORY, fixtureName), "utf8");
+  return Bun.file(resolve(FIXTURE_DIRECTORY, fixtureName)).text();
 }
 
 /** Replays a fixture against the schema candidate used by this spike. */

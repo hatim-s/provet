@@ -54,7 +54,7 @@ Reread your diff. Every name: would a stranger know what it holds? Every file: i
   or `config` as a plain object with well-defined keys and types.
 
 ### Incremental development
-Small increments; every commit compiles (`pnpm typecheck`) and passes owned
+Small increments; every commit compiles (`bun run typecheck`) and passes owned
 tests. Conventional commits. No massive dumps.
 
 ### Commands

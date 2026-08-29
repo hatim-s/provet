@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
 
 import type { VetEffectPorts } from "../application/ports/index.js";
 import { createSystemGitPort } from "./git/create-system-git-port.js";
@@ -12,7 +11,7 @@ function createSystemVetEffectPorts(): VetEffectPorts {
       getCurrentTime: () => new Date(),
     },
     fileSystem: {
-      readTextFile: (filePath) => readFile(filePath, "utf8"),
+      readTextFile: (filePath) => Bun.file(filePath).text(),
     },
     git: createSystemGitPort(),
     identifierGenerator: {

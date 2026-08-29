@@ -6,15 +6,15 @@ source import.
 
 ## Package manager and lockfile
 
-- pnpm `10.8.x` is the repository package manager.
-- `package.json` records the package-manager version and `pnpm-lock.yaml` is the
-  only dependency lockfile.
+- Bun `1.4.x` is the repository package manager and runtime toolchain.
+- `package.json` records the package-manager version and `bun.lock` is the only
+  dependency lockfile.
 - Dependency versions are exact in `package.json`; clean installs use
-  `pnpm install --frozen-lockfile`.
+  `bun install --frozen-lockfile`.
 
 ## Runtime compatibility
 
-- Bun `1.3.0` or newer is the supported runtime for the `vet` CLI, tests, and
+- Bun `1.4.0` or newer is the supported runtime for the `vet` CLI, tests, and
   build.
 - Node.js `22.0.0` or newer is the compatibility floor for shared standard
   library APIs and development tooling. The executable entry point still uses

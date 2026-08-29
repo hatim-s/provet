@@ -139,6 +139,7 @@ test("Git output is terminated at the combined capture limit", async () => {
     const gitPort = createSystemGitPort(
       createGitPortTestOptions(gitExecutablePath, {
         maximumOutputBytes: 1_024,
+        timeoutMs: 3_000,
       }),
     );
     await expect(
